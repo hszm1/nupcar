@@ -1,0 +1,15 @@
+﻿
+# Local Android files
+.gradle/
+.kotlin/
+.idea/
+build/
+local.properties
+*.iml
+.cxx/
+.externalNativeBuild/
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
