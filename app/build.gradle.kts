@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "ai.pleos.playground.sample.vehicle"
-        minSdk = 23
+        minSdk = 28
         targetSdk = targetAndroidSdk
         versionCode =
             targetAndroidSdk * 1_000_000 +
