@@ -1,5 +1,12 @@
 package ai.pleos.playground.sample.vehicle
 
+import ai.pleos.playground.sample.vehicle.explorer.VehicleDomain
+import ai.pleos.playground.sample.vehicle.ui.screen.SampleApp
+import ai.pleos.playground.sample.vehicle.ui.theme.VehicleSampleAppTheme
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.app.Application
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
@@ -8,12 +15,15 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,9 +37,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -42,35 +54,53 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
 /*
  * Nupcar first screen.
  * This version implements mode selection, a foreground session timer and an
- * alarm tone. It does not move seats, change vehicle settings or play ASMR.
+ * alarm tone. Automatic rest-session vehicle control and ASMR are not connected.
+ * The DEBUG inspector provides explicit vehicle change/restore test actions.
  * The ViewModel survives activity recreation, not Android process termination.
- * A persistent alarm/service and vehicle integration are separate next steps.
+ * A persistent alarm/service and automatic vehicle integration are next steps.
+ * DEBUG builds: long-press the Nupcar title to open the original SDK inspector.
+ * The inspector sends real requests; a successful set callback is not proof
+ * that a vehicle value changed. Use a fresh read or a received update to verify.
  */
 class MainActivity : ComponentActivity() {
     private val nupcar: NupcarViewModel by viewModels()
+    private val vehicleInspector: MainViewModel by viewModels()
+    private val vehicleControls: NupcarVehicleControlViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
+            var showVehicleInspector by rememberSaveable { mutableStateOf(false) }
             val state = nupcar.state
             val keepScreenOn =
                 state.phase == NupcarPhase.RUNNING || state.phase == NupcarPhase.PAUSED
@@ -84,7 +114,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            NupcarTheme {
+            if (showVehicleInspector && BuildConfig.DEBUG) {
+                // Lazily creates the sample ViewModel only when opening tools.
+                NupcarVehicleInspector(
+                    viewModel = vehicleInspector,
+                    controls = vehicleControls,
+                    onClose = { showVehicleInspector = false },
+                )
+            } else NupcarTheme {
                 NupcarScreen(
                     state = state,
                     onModeSelected = nupcar::selectMode,
@@ -95,10 +132,181 @@ class MainActivity : ComponentActivity() {
                     onPause = nupcar::pause,
                     onResume = nupcar::resume,
                     onFinish = nupcar::reset,
+                    onOpenVehicleInspector = {
+                        if (BuildConfig.DEBUG && nupcar.state.phase == NupcarPhase.READY) {
+                            showVehicleInspector = true
+                        }
+                    },
                 )
             }
         }
     }
+}
+
+/** Development-only entry to the existing official sample. No automatic writes. */
+@Composable
+private fun NupcarVehicleInspector(
+    viewModel: MainViewModel,
+    controls: NupcarVehicleControlViewModel,
+    onClose: () -> Unit,
+) {
+    val context = LocalContext.current
+    var report by remember { mutableStateOf("") }
+    var showReport by remember { mutableStateOf(true) }
+    var showControls by remember { mutableStateOf(false) }
+    val controlState = controls.uiState.collectAsStateWithLifecycle().value
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, controls) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) controls.cancel()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            controls.cancel()
+        }
+    }
+    val probe = remember(context) { NupcarVehicleProbe(context) { report = it } }
+    LaunchedEffect(probe) { probe.inspect() }
+    DisposableEffect(probe) { onDispose { probe.close() } }
+    val inspectorState = viewModel.uiState.collectAsStateWithLifecycle().value
+    val closeInspector: () -> Unit = {
+        if (controlState.busy) {
+            controls.cancel()
+            showControls = true
+        } else {
+            // Switching domain also releases any listeners registered by the sample.
+            viewModel.showApiExplorer(VehicleDomain.SEAT)
+            onClose()
+        }
+    }
+    BackHandler(onBack = closeInspector)
+
+    VehicleSampleAppTheme {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    TextButton(onClick = closeInspector) { Text("눕카로 돌아가기") }
+                    TextButton(onClick = { showControls = true }) { Text("변경 시험") }
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = { showReport = true; probe.inspect() }) {
+                        Text("지원 자동 점검")
+                    }
+                    TextButton(onClick = { viewModel.showApiExplorer(VehicleDomain.SEAT) }) {
+                        Text("시트")
+                    }
+                    TextButton(onClick = { viewModel.showApiExplorer(VehicleDomain.HVAC) }) {
+                        Text("공조")
+                    }
+                    TextButton(onClick = { viewModel.showApiExplorer(VehicleDomain.LIGHT) }) {
+                        Text("조명")
+                    }
+                }
+                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    SampleApp(
+                        uiState = inspectorState,
+                        onOpenDomain = viewModel::showApiExplorer,
+                        onSelectFeature = viewModel::selectFeature,
+                        onSearchFeatures = viewModel::searchFeatures,
+                        onRunCapability = viewModel::runFeatureCapability,
+                        onRunRead = viewModel::runFeatureRead,
+                        onRunSet = viewModel::runFeatureSet,
+                        onStartUpdates = viewModel::startFeatureUpdates,
+                        onStopUpdates = viewModel::stopFeatureUpdates,
+                        onBackToFeatureList = viewModel::backToFeatureList,
+                        onDismissError = viewModel::dismissError,
+                    )
+                }
+            }
+        }
+        if (showReport) AlertDialog(
+            onDismissRequest = { showReport = false },
+            title = { Text("시트·공조·앰비언트 점검") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        report.ifBlank { "Vehicle Service 응답을 기다리고 있습니다." },
+                        modifier = Modifier.height(420.dp).verticalScroll(rememberScrollState()),
+                        fontSize = 14.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("눕카 차량 점검", report))
+                }) { Text("결과 복사") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReport = false }) { Text("점검 화면 보기") }
+            },
+        )
+        if (showControls) AlertDialog(
+            onDismissRequest = { if (controlState.busy) controls.cancel() else showControls = false },
+            title = { Text("차량 변경·복원 시험") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Pleos 에뮬레이터용입니다. 원래 값을 읽은 후 변경하고, 재조회로 복원을 확인합니다.", fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = controls::testSeat,
+                            enabled = !controlState.busy && !controlState.pendingRestore,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("시트 0.5초") }
+                        OutlinedButton(
+                            onClick = controls::testEnvironment,
+                            enabled = !controlState.busy && !controlState.pendingRestore,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("공조·조명") }
+                    }
+                    if (controlState.pendingRestore && !controlState.busy) {
+                        OutlinedButton(onClick = controls::retryRestore) { Text("복원 재시도") }
+                    }
+                    SelectionContainer {
+                        Text(
+                            controlState.report.ifBlank { "시험할 기능을 선택하세요. 온도 원래 값을 읽지 못하면 온도 변경은 건너뜁니다." },
+                            modifier = Modifier.height(290.dp).verticalScroll(rememberScrollState()),
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("눕카 변경 시험", controlState.report))
+                }) { Text("결과 복사") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    if (controlState.busy) controls.cancel() else showControls = false
+                }) { Text(if (controlState.busy) "중지·복원" else "닫기") }
+            },
+        )
+    }
+}
+
+data class NupcarVehicleControlState(
+    val report: String = "",
+    val busy: Boolean = false,
+    val pendingRestore: Boolean = false,
+)
+
+class NupcarVehicleControlViewModel(application: Application) : AndroidViewModel(application) {
+    private val mutableUiState = MutableStateFlow(NupcarVehicleControlState())
+    val uiState = mutableUiState.asStateFlow()
+    private val controller = NupcarVehicleControlTest(application) { report, busy, pending ->
+        mutableUiState.value = NupcarVehicleControlState(report, busy, pending)
+    }
+    fun testSeat() = controller.testSeat()
+    fun testEnvironment() = controller.testEnvironment()
+    fun retryRestore() = controller.retryRestore()
+    fun cancel() = controller.cancel()
+    override fun onCleared() { controller.close(); super.onCleared() }
 }
 
 enum class NupcarMode(
@@ -315,6 +523,7 @@ private fun NupcarTheme(content: @Composable () -> Unit) {
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NupcarScreen(
     state: NupcarState,
@@ -326,6 +535,7 @@ private fun NupcarScreen(
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
     onFinish: () -> Unit = {},
+    onOpenVehicleInspector: () -> Unit = {},
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = NupcarBackground) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -339,7 +549,18 @@ private fun NupcarScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("NUPCAR", color = NupcarMint, fontSize = 14.sp, letterSpacing = 3.sp)
-                    Text("눕카", fontSize = 36.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "눕카",
+                        fontSize = 36.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = if (BuildConfig.DEBUG && state.phase == NupcarPhase.READY) {
+                            Modifier.combinedClickable(
+                                onClick = {},
+                                onLongClickLabel = "차량 기능 점검 열기",
+                                onLongClick = onOpenVehicleInspector,
+                            )
+                        } else Modifier,
+                    )
                     Text("쉬는 시간도, 내 취향대로.", color = NupcarMuted, fontSize = 18.sp)
                 }
 
