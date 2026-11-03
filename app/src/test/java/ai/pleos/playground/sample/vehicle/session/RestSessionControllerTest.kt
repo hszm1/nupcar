@@ -190,6 +190,21 @@ class RestSessionControllerTest {
     }
 
     @Test
+    fun climateThatWasOffIsTurnedBackOffWithoutWarnings() = runBlocking<Unit> {
+        vehicle.temperatureNeedsPower = true
+        controller.start(profile)
+        awaitResting()
+        assertEquals(true, vehicle.climate.powerOn)
+        assertEquals(profile.temperatureC, vehicle.climate.temperatureC)
+
+        controller.wakeNow()
+        val finished = awaitState<RestState.Finished>()
+
+        assertEquals(false, vehicle.climate.powerOn)
+        assertTrue(finished.warnings.isEmpty())
+    }
+
+    @Test
     fun wakeSoundCanBeTurnedOff() = runBlocking<Unit> {
         controller.start(profile.copy(wakeSoundEnabled = false))
         awaitResting()

@@ -15,6 +15,9 @@ import android.car.VehicleGear
 import android.car.VehiclePropertyIds
 import android.car.hardware.property.CarPropertyManager
 import android.content.Context
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -41,9 +44,11 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
 
     private var moveArea: SeatArea? = null
     private var positionArea: SeatArea? = null
-    private var climateArea: SeatArea? = null
+    private var climatePowerArea: SeatArea? = null
+    private var temperatureArea: SeatArea? = null
     private var temperatureRange: AreaBounds<Float>? = null
     private var ambientArea: SeatArea? = null
+    private var ambientSwitchArea: SeatArea? = null
 
     override suspend fun isParked(): Boolean? = androidGearIsPark() ?: pleosGearIsPark()
 
@@ -114,26 +119,43 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         seat.getCurrentSeatOccupancy(SeatArea(SeatValue.ROW_2_LEFT), done, failed)
     }
 
+    /** The vehicle reports no target temperature while climate is off, so each value is optional. */
     override suspend fun readClimate(): ClimateState {
-        val area = resolveClimateArea()
-        val power = call<Boolean?> { done, failed -> hvac.getHvacPowerState(area, done, failed) }
-        val temperature = call<Float?> { done, failed ->
-            hvac.getHvacTemperature(area, TemperatureUnit.CELSIUS, done, failed)
+        val power = orNull {
+            val area = resolveClimatePowerArea()
+            call<Boolean?> { done, failed -> hvac.getHvacPowerState(area, done, failed) }
+        }
+        val temperature = orNull {
+            val area = resolveTemperatureArea()
+            call<Float?> { done, failed -> hvac.getHvacTemperature(area, TemperatureUnit.CELSIUS, done, failed) }
         }
         return ClimateState(power, temperature)
     }
 
     override suspend fun setClimatePower(on: Boolean) {
-        val area = resolveClimateArea()
+        val area = resolveClimatePowerArea()
         call<Unit> { done, failed -> hvac.setHvacPower(area, on, { _, _ -> done(Unit) }, failed) }
     }
 
+    /** Retries because the temperature stays unavailable briefly after climate is turned on. */
     override suspend fun setTemperature(celsius: Float) {
-        val area = resolveClimateArea()
+        val area = resolveTemperatureArea()
         val value = temperatureRange?.let { celsius.coerceIn(it.minValue, it.maxValue) } ?: celsius
-        call<Unit> { done, failed ->
-            hvac.setHvacTemperature(area, value, TemperatureUnit.CELSIUS, { _, _ -> done(Unit) }, failed)
+        var lastFailure: Exception? = null
+        repeat(TEMPERATURE_ATTEMPTS) { attempt ->
+            try {
+                call<Unit> { done, failed ->
+                    hvac.setHvacTemperature(area, value, TemperatureUnit.CELSIUS, { _, _ -> done(Unit) }, failed)
+                }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastFailure = e
+                if (attempt < TEMPERATURE_ATTEMPTS - 1) delay(TEMPERATURE_RETRY_MILLIS)
+            }
         }
+        throw lastFailure ?: IllegalStateException("온도를 설정하지 못했습니다")
     }
 
     override suspend fun ambientBounds(): IntRange? = call { done, failed ->
@@ -147,15 +169,20 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         )
     }
 
-    override suspend fun readAmbient(): AmbientState? {
-        val area = resolveAmbientArea() ?: return null
-        val switch = call<LightSwitch?> { done, failed -> light.getAmbientLightSwitch(area, done, failed) }
-        val brightness = call<Int?> { done, failed -> light.getAmbientLightBrightness(area, done, failed) }
+    override suspend fun readAmbient(): AmbientState {
+        val switch = orNull {
+            val area = resolveAmbientSwitchArea() ?: return@orNull null
+            call<LightSwitch?> { done, failed -> light.getAmbientLightSwitch(area, done, failed) }
+        }
+        val brightness = orNull {
+            val area = resolveAmbientArea() ?: return@orNull null
+            call<Int?> { done, failed -> light.getAmbientLightBrightness(area, done, failed) }
+        }
         return AmbientState(switch?.let { it == LightSwitch.ON }, brightness)
     }
 
     override suspend fun setAmbientSwitch(on: Boolean) {
-        val area = resolveAmbientArea() ?: return
+        val area = resolveAmbientSwitchArea() ?: return
         val value = if (on) LightSwitch.ON else LightSwitch.OFF
         call<Unit> { done, failed -> light.setAmbientLightSwitch(area, value, { _, _ -> done(Unit) }, failed) }
     }
@@ -170,16 +197,38 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         return ambientArea
     }
 
-    private suspend fun resolveClimateArea(): SeatArea {
-        climateArea?.let { return it }
+    private suspend fun resolveAmbientSwitchArea(): SeatArea? {
+        ambientSwitchArea?.let { return it }
+        return call<SeatArea?> { done, failed ->
+            light.checkAmbientLightSwitchCapabilities(
+                onComplete = { _, areas -> done(driverArea(areas.keys)) },
+                onFailed = failed
+            )
+        }.also { ambientSwitchArea = it }
+    }
+
+    private suspend fun resolveClimatePowerArea(): SeatArea {
+        climatePowerArea?.let { return it }
+        val area = call<SeatArea?> { done, failed ->
+            hvac.checkHvacPowerCapabilities(
+                onComplete = { _, areas -> done(driverArea(areas)) },
+                onFailed = failed
+            )
+        } ?: error("운전석 공조 전원이 지원되지 않습니다")
+        climatePowerArea = area
+        return area
+    }
+
+    private suspend fun resolveTemperatureArea(): SeatArea {
+        temperatureArea?.let { return it }
         return call { done, failed ->
             hvac.checkHvacTemperatureCapabilities(
                 onComplete = { _, bounds, _ ->
                     val area = driverArea(bounds.keys)
                     if (area == null) {
-                        failed(IllegalStateException("운전석 공조 영역이 지원되지 않습니다"))
+                        failed(IllegalStateException("운전석 공조 온도가 지원되지 않습니다"))
                     } else {
-                        climateArea = area
+                        temperatureArea = area
                         temperatureRange = bounds[area]
                         done(area)
                     }
@@ -187,6 +236,17 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
                 onFailed = failed
             )
         }
+    }
+
+    /** Lets one unavailable value leave the others usable, without hiding a cancelled session. */
+    private suspend fun <T> orNull(block: suspend () -> T?): T? = try {
+        block()
+    } catch (e: TimeoutCancellationException) {
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
     }
 
     private fun driverArea(areas: Collection<SeatArea>): SeatArea? =
@@ -212,5 +272,7 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         const val CALL_TIMEOUT_MILLIS = 2_500L
         const val MOVE_ACK_WAIT_MILLIS = 300L
         const val GLOBAL_AREA = 0
+        const val TEMPERATURE_ATTEMPTS = 4
+        const val TEMPERATURE_RETRY_MILLIS = 300L
     }
 }

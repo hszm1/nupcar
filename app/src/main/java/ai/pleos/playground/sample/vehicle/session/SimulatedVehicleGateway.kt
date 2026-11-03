@@ -12,6 +12,7 @@ class SimulatedVehicleGateway(
     var seatJammed = false
     var invertDirection = false
     var climateFails = false
+    var temperatureNeedsPower = false
     val bounds = 0..100
 
     var climate = ClimateState(powerOn = false, temperatureC = 21f)
@@ -45,7 +46,8 @@ class SimulatedVehicleGateway(
     }
 
     override suspend fun isSeatBehindOccupied(): Boolean? = seatBehindOccupied
-    override suspend fun readClimate(): ClimateState = climate
+    override suspend fun readClimate(): ClimateState =
+        if (temperatureNeedsPower && climate.powerOn != true) climate.copy(temperatureC = null) else climate
 
     override suspend fun setClimatePower(on: Boolean) {
         if (climateFails) error("공조 제어 불가")
@@ -54,6 +56,7 @@ class SimulatedVehicleGateway(
 
     override suspend fun setTemperature(celsius: Float) {
         if (climateFails) error("공조 제어 불가")
+        if (temperatureNeedsPower && climate.powerOn != true) error("공조가 꺼져 있습니다")
         climate = climate.copy(temperatureC = celsius)
     }
 
