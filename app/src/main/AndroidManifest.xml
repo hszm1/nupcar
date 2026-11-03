@@ -37,7 +37,15 @@
     <uses-permission android:name="pleos.car.permission.READ_WINDSHIELD_WIPERS" />
     <uses-permission android:name="pleos.car.permission.CONTROL_WINDSHIELD_WIPERS" />
 
+    <!-- Reads GEAR_SELECTION, which gates all seat movement. -->
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+
+    <!-- Keeps a rest session and its wake-up running when the app leaves the screen. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
     <application
+        android:name=".NupcarApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -46,6 +54,10 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.VehicleSampleApp">
+        <uses-library
+            android:name="android.car"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -55,6 +67,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".session.RestSessionService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 
 </manifest>

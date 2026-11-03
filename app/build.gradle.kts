@@ -8,10 +8,12 @@ val targetAndroidSdk = 35
 val sampleVersionMajor = 1
 val sampleVersionMinor = 0
 val sampleVersionPatch = 0
+val simulatedVehicle = providers.gradleProperty("nupcar.simulated").orNull == "true"
 
 android {
     namespace = "ai.pleos.playground.sample.vehicle"
     compileSdk = targetAndroidSdk
+    useLibrary("android.car")
 
     defaultConfig {
         applicationId = "ai.pleos.playground.sample.vehicle"
@@ -30,6 +32,8 @@ android {
             "VEHICLE_SDK_VERSION",
             "\"${libs.versions.vehicleSdk.get()}\""
         )
+
+        buildConfigField("boolean", "SIMULATED_VEHICLE", simulatedVehicle.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -65,6 +69,7 @@ android {
 dependencies {
     implementation(libs.vehicle.sdk)
     implementation(libs.kotlin.reflect)
+    implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

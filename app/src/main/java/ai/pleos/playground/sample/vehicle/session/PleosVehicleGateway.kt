@@ -1,0 +1,216 @@
+package ai.pleos.playground.sample.vehicle.session
+
+import ai.pleos.playground.vehicle.Vehicle
+import ai.pleos.playground.vehicle.api.model.area.SeatArea
+import ai.pleos.playground.vehicle.api.model.capability.AccessType
+import ai.pleos.playground.vehicle.api.model.capability.AreaBounds
+import ai.pleos.playground.vehicle.constant.area.SeatValue
+import ai.pleos.playground.vehicle.constant.control.LightSwitch
+import ai.pleos.playground.vehicle.constant.control.MoveControl
+import ai.pleos.playground.vehicle.constant.control.VehicleGear as PleosGear
+import ai.pleos.playground.vehicle.constant.unit.TemperatureUnit
+import android.annotation.SuppressLint
+import android.car.Car
+import android.car.VehicleGear
+import android.car.VehiclePropertyIds
+import android.car.hardware.property.CarPropertyManager
+import android.content.Context
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * Connects a rest session to the Pleos Vehicle SDK.
+ *
+ * Vehicles may report grouped seat areas, so each feature looks up the area that contains
+ * the driver's seat from its own capability response instead of assuming one.
+ */
+@SuppressLint("MissingPermission")
+class PleosVehicleGateway(context: Context) : VehicleGateway {
+    private val appContext = context.applicationContext
+    private val vehicle = Vehicle(appContext).also { it.initialize() }
+    private val seat = vehicle.getSeat()
+    private val hvac = vehicle.getHVAC()
+    private val light = vehicle.getLight()
+    private val car: Car? = runCatching { Car.createCar(appContext) }.getOrNull()
+    private val properties: CarPropertyManager? = runCatching {
+        car?.getCarManager(Car.PROPERTY_SERVICE) as? CarPropertyManager
+    }.getOrNull()
+
+    private var moveArea: SeatArea? = null
+    private var positionArea: SeatArea? = null
+    private var climateArea: SeatArea? = null
+    private var temperatureRange: AreaBounds<Float>? = null
+    private var ambientArea: SeatArea? = null
+
+    override suspend fun isParked(): Boolean? = androidGearIsPark() ?: pleosGearIsPark()
+
+    private fun androidGearIsPark(): Boolean? = runCatching {
+        properties?.getIntProperty(VehiclePropertyIds.GEAR_SELECTION, GLOBAL_AREA)
+            ?.let { it == VehicleGear.GEAR_PARK }
+    }.getOrNull()
+
+    /** Fallback while the Android property's availability on Pleos Connect is unconfirmed. */
+    @Suppress("DEPRECATION")
+    private suspend fun pleosGearIsPark(): Boolean? = runCatching {
+        call<PleosGear?> { done, failed ->
+            vehicle.getGear().getCurrentGearSelectionState(done, failed)
+        }?.let { it == PleosGear.GEAR_PARK }
+    }.getOrNull()
+
+    override suspend fun backrestBounds(): IntRange? {
+        val area = call<SeatArea?> { done, failed ->
+            seat.checkMoveSeatBackrestAngleCapabilities(
+                onComplete = { config, areas -> done(driverArea(areas).takeIf { config.accessType.canWrite() }) },
+                onFailed = failed
+            )
+        } ?: return null
+        moveArea = area
+        return call { done, failed ->
+            seat.checkSeatBackrestAnglePositionCapabilities(
+                onComplete = { config, bounds ->
+                    val found = driverArea(bounds.keys).takeIf { config.accessType.canRead() }
+                    positionArea = found
+                    done(found?.let { key -> bounds.getValue(key).let { it.minValue..it.maxValue } })
+                },
+                onFailed = failed
+            )
+        }
+    }
+
+    override suspend fun backrestPosition(): Int? {
+        val area = positionArea ?: error("시트 위치 영역을 확인하지 못했습니다")
+        return call { done, failed -> seat.getCurrentSeatBackrestAnglePosition(area, done, failed) }
+    }
+
+    /**
+     * A late acknowledgement must not delay a stop, so a move only waits briefly. If the seat
+     * then fails to move, the position checks in [SeatMover] detect it. STOP waits for the reply.
+     */
+    override suspend fun moveBackrest(direction: SeatDirection) {
+        val area = moveArea ?: error("시트 이동 영역을 확인하지 못했습니다")
+        val control = when (direction) {
+            SeatDirection.RECLINE -> MoveControl.BACKWARD
+            SeatDirection.UPRIGHT -> MoveControl.FORWARD
+            SeatDirection.STOP -> MoveControl.STOP
+        }
+        val waitMillis = if (direction == SeatDirection.STOP) CALL_TIMEOUT_MILLIS else MOVE_ACK_WAIT_MILLIS
+        val result = withTimeoutOrNull(waitMillis) {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                seat.moveSeatBackrestAngle(
+                    area,
+                    control,
+                    { _, _ -> if (continuation.isActive) continuation.resume(Unit) },
+                    { error -> if (continuation.isActive) continuation.resumeWithException(error) }
+                )
+            }
+        }
+        if (result == null && direction == SeatDirection.STOP) error("시트 정지 응답을 받지 못했습니다")
+    }
+
+    override suspend fun isSeatBehindOccupied(): Boolean? = call { done, failed ->
+        seat.getCurrentSeatOccupancy(SeatArea(SeatValue.ROW_2_LEFT), done, failed)
+    }
+
+    override suspend fun readClimate(): ClimateState {
+        val area = resolveClimateArea()
+        val power = call<Boolean?> { done, failed -> hvac.getHvacPowerState(area, done, failed) }
+        val temperature = call<Float?> { done, failed ->
+            hvac.getHvacTemperature(area, TemperatureUnit.CELSIUS, done, failed)
+        }
+        return ClimateState(power, temperature)
+    }
+
+    override suspend fun setClimatePower(on: Boolean) {
+        val area = resolveClimateArea()
+        call<Unit> { done, failed -> hvac.setHvacPower(area, on, { _, _ -> done(Unit) }, failed) }
+    }
+
+    override suspend fun setTemperature(celsius: Float) {
+        val area = resolveClimateArea()
+        val value = temperatureRange?.let { celsius.coerceIn(it.minValue, it.maxValue) } ?: celsius
+        call<Unit> { done, failed ->
+            hvac.setHvacTemperature(area, value, TemperatureUnit.CELSIUS, { _, _ -> done(Unit) }, failed)
+        }
+    }
+
+    override suspend fun ambientBounds(): IntRange? = call { done, failed ->
+        light.checkAmbientLightBrightnessCapabilities(
+            onComplete = { config, bounds ->
+                val found = driverArea(bounds.keys).takeIf { config.accessType == AccessType.READ_WRITE }
+                ambientArea = found
+                done(found?.let { key -> bounds.getValue(key).let { it.minValue..it.maxValue } })
+            },
+            onFailed = failed
+        )
+    }
+
+    override suspend fun readAmbient(): AmbientState? {
+        val area = resolveAmbientArea() ?: return null
+        val switch = call<LightSwitch?> { done, failed -> light.getAmbientLightSwitch(area, done, failed) }
+        val brightness = call<Int?> { done, failed -> light.getAmbientLightBrightness(area, done, failed) }
+        return AmbientState(switch?.let { it == LightSwitch.ON }, brightness)
+    }
+
+    override suspend fun setAmbientSwitch(on: Boolean) {
+        val area = resolveAmbientArea() ?: return
+        val value = if (on) LightSwitch.ON else LightSwitch.OFF
+        call<Unit> { done, failed -> light.setAmbientLightSwitch(area, value, { _, _ -> done(Unit) }, failed) }
+    }
+
+    override suspend fun setAmbientBrightness(value: Int) {
+        val area = resolveAmbientArea() ?: return
+        call<Unit> { done, failed -> light.setAmbientLightBrightness(area, value, { _, _ -> done(Unit) }, failed) }
+    }
+
+    private suspend fun resolveAmbientArea(): SeatArea? {
+        if (ambientArea == null) ambientBounds()
+        return ambientArea
+    }
+
+    private suspend fun resolveClimateArea(): SeatArea {
+        climateArea?.let { return it }
+        return call { done, failed ->
+            hvac.checkHvacTemperatureCapabilities(
+                onComplete = { _, bounds, _ ->
+                    val area = driverArea(bounds.keys)
+                    if (area == null) {
+                        failed(IllegalStateException("운전석 공조 영역이 지원되지 않습니다"))
+                    } else {
+                        climateArea = area
+                        temperatureRange = bounds[area]
+                        done(area)
+                    }
+                },
+                onFailed = failed
+            )
+        }
+    }
+
+    private fun driverArea(areas: Collection<SeatArea>): SeatArea? =
+        areas.firstOrNull { it.values.size == 1 && SeatValue.ROW_1_LEFT in it.values }
+            ?: areas.firstOrNull { SeatValue.ROW_1_LEFT in it.values }
+
+    private fun AccessType.canWrite() = this == AccessType.WRITE || this == AccessType.READ_WRITE
+    private fun AccessType.canRead() = this == AccessType.READ || this == AccessType.READ_WRITE
+
+    /** Turns an SDK callback pair into a suspending call that cannot hang a session. */
+    private suspend fun <T> call(
+        block: (done: (T) -> Unit, failed: (Exception) -> Unit) -> Unit
+    ): T = withTimeout(CALL_TIMEOUT_MILLIS) {
+        suspendCancellableCoroutine { continuation ->
+            block(
+                { value -> if (continuation.isActive) continuation.resume(value) },
+                { error -> if (continuation.isActive) continuation.resumeWithException(error) }
+            )
+        }
+    }
+
+    private companion object {
+        const val CALL_TIMEOUT_MILLIS = 2_500L
+        const val MOVE_ACK_WAIT_MILLIS = 300L
+        const val GLOBAL_AREA = 0
+    }
+}

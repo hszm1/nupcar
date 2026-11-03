@@ -1,6 +1,13 @@
 package ai.pleos.playground.sample.vehicle
 
 import ai.pleos.playground.sample.vehicle.explorer.VehicleDomain
+import ai.pleos.playground.sample.vehicle.session.NupcarMode
+import ai.pleos.playground.sample.vehicle.session.ProfileStore
+import ai.pleos.playground.sample.vehicle.session.RestProfile
+import ai.pleos.playground.sample.vehicle.session.RestSessionService
+import ai.pleos.playground.sample.vehicle.session.RestSound
+import ai.pleos.playground.sample.vehicle.session.RestState
+import ai.pleos.playground.sample.vehicle.session.WakeSpeed
 import ai.pleos.playground.sample.vehicle.ui.screen.SampleApp
 import ai.pleos.playground.sample.vehicle.ui.theme.VehicleSampleAppTheme
 import android.content.ClipData
@@ -22,6 +29,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -36,8 +48,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -47,6 +61,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -63,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -78,14 +94,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /*
  * Nupcar first screen.
- * This version implements mode selection, a foreground session timer and an
- * alarm tone. Automatic rest-session vehicle control and ASMR are not connected.
- * The DEBUG inspector provides explicit vehicle change/restore test actions.
- * The ViewModel survives activity recreation, not Android process termination.
- * A persistent alarm/service and automatic vehicle integration are next steps.
+ * Starting a rest runs the session in the session package, which controls the seat,
+ * climate, light and sound. The 10-second alarm preview stays local and never touches
+ * the vehicle. The DEBUG inspector provides explicit vehicle change/restore test actions.
+ * A running session survives leaving the screen, not Android process termination.
  * DEBUG builds: long-press the Nupcar title to open the original SDK inspector.
  * The inspector sends real requests; a successful set callback is not proof
  * that a vehicle value changed. Use a fresh read or a received update to verify.
@@ -102,8 +118,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             var showVehicleInspector by rememberSaveable { mutableStateOf(false) }
             val state = nupcar.state
+            val session = nupcar.session.collectAsStateWithLifecycle().value
             val keepScreenOn =
-                state.phase == NupcarPhase.RUNNING || state.phase == NupcarPhase.PAUSED
+                state.phase == NupcarPhase.RUNNING || state.phase == NupcarPhase.PAUSED ||
+                    session !is RestState.Idle
 
             DisposableEffect(keepScreenOn) {
                 if (keepScreenOn) {
@@ -124,16 +142,24 @@ class MainActivity : ComponentActivity() {
             } else NupcarTheme {
                 NupcarScreen(
                     state = state,
+                    session = session,
                     onModeSelected = nupcar::selectMode,
                     onMinutesSelected = nupcar::selectMinutes,
                     onAlarmChanged = nupcar::setAlarmEnabled,
-                    onStart = { nupcar.start(preview = false) },
+                    onProfileChanged = nupcar::updateProfile,
+                    onStart = nupcar::startSession,
+                    onWakeNow = nupcar::wakeNow,
+                    onEmergencyStop = nupcar::emergencyStop,
+                    onRestoreSeat = nupcar::restoreSeat,
+                    onSessionDone = nupcar::finishSession,
                     onPreview = { nupcar.start(preview = true) },
                     onPause = nupcar::pause,
                     onResume = nupcar::resume,
                     onFinish = nupcar::reset,
                     onOpenVehicleInspector = {
-                        if (BuildConfig.DEBUG && nupcar.state.phase == NupcarPhase.READY) {
+                        if (BuildConfig.DEBUG && nupcar.state.phase == NupcarPhase.READY &&
+                            session is RestState.Idle
+                        ) {
                             showVehicleInspector = true
                         }
                     },
@@ -309,16 +335,6 @@ class NupcarVehicleControlViewModel(application: Application) : AndroidViewModel
     override fun onCleared() { controller.close(); super.onCleared() }
 }
 
-enum class NupcarMode(
-    val title: String,
-    val description: String,
-    val defaultMinutes: Int,
-) {
-    NAP("낮잠", "잠깐 눈을 붙이고 쉬어가요.", 20),
-    MEDITATION("명상", "잠시 호흡과 나에게 집중해요.", 10),
-    ASMR("ASMR", "편안한 소리와 함께하는 휴식.", 30),
-}
-
 enum class NupcarPhase { READY, RUNNING, PAUSED, FINISHED }
 
 data class NupcarState(
@@ -330,14 +346,35 @@ data class NupcarState(
     val alarmEnabled: Boolean = true,
     val isPreview: Boolean = false,
     val alarmError: String? = null,
+    val profile: RestProfile = RestProfile.default(NupcarMode.NAP),
 ) {
     val progress: Float
         get() = if (totalMs <= 0L) 0f else
             (1f - remainingMs.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
 }
 
-class NupcarViewModel : ViewModel() {
-    var state by mutableStateOf(NupcarState())
+/** Shorter choice for development and demo recordings only. */
+private val NupcarMinuteChoices: List<Int> =
+    (if (BuildConfig.DEBUG) listOf(1) else emptyList()) + listOf(10, 20, 30, 60)
+
+class NupcarViewModel(application: Application) : AndroidViewModel(application) {
+    private val app = application as NupcarApplication
+    private val profiles = ProfileStore(application)
+    private val controller get() = app.controller
+
+    val session get() = controller.state
+
+    var state by mutableStateOf(
+        profiles.load(NupcarMode.NAP).let {
+            val duration = it.durationMinutes * 60_000L
+            NupcarState(
+                selectedMinutes = it.durationMinutes,
+                remainingMs = duration,
+                totalMs = duration,
+                profile = it,
+            )
+        }
+    )
         private set
 
     private var timer: CountDownTimer? = null
@@ -349,17 +386,45 @@ class NupcarViewModel : ViewModel() {
 
     fun selectMode(mode: NupcarMode) {
         if (state.phase != NupcarPhase.READY) return
-        val duration = mode.defaultMinutes * 60_000L
+        val profile = profiles.load(mode)
+        val duration = profile.durationMinutes * 60_000L
         state = state.copy(
             mode = mode,
-            selectedMinutes = mode.defaultMinutes,
+            selectedMinutes = profile.durationMinutes,
             remainingMs = duration,
             totalMs = duration,
+            profile = profile,
         )
     }
 
+    fun updateProfile(profile: RestProfile) {
+        if (state.phase == NupcarPhase.READY) state = state.copy(profile = profile)
+    }
+
+    fun startSession() {
+        if (state.phase != NupcarPhase.READY) return
+        val profile = state.profile.copy(
+            durationMinutes = state.selectedMinutes,
+            wakeSoundEnabled = state.alarmEnabled,
+        )
+        profiles.save(profile)
+        controller.start(profile)
+        RestSessionService.start(app)
+    }
+
+    fun wakeNow() = controller.wakeNow()
+
+    fun emergencyStop() = controller.emergencyStop()
+
+    fun restoreSeat() {
+        controller.restoreSeat()
+        RestSessionService.start(app)
+    }
+
+    fun finishSession() = controller.reset()
+
     fun selectMinutes(minutes: Int) {
-        if (state.phase != NupcarPhase.READY || minutes !in listOf(10, 20, 30, 60)) return
+        if (state.phase != NupcarPhase.READY || minutes !in NupcarMinuteChoices) return
         val duration = minutes * 60_000L
         state = state.copy(
             selectedMinutes = minutes,
@@ -527,10 +592,16 @@ private fun NupcarTheme(content: @Composable () -> Unit) {
 @Composable
 private fun NupcarScreen(
     state: NupcarState,
+    session: RestState = RestState.Idle,
     onModeSelected: (NupcarMode) -> Unit = {},
     onMinutesSelected: (Int) -> Unit = {},
     onAlarmChanged: (Boolean) -> Unit = {},
+    onProfileChanged: (RestProfile) -> Unit = {},
     onStart: () -> Unit = {},
+    onWakeNow: () -> Unit = {},
+    onEmergencyStop: () -> Unit = {},
+    onRestoreSeat: () -> Unit = {},
+    onSessionDone: () -> Unit = {},
     onPreview: () -> Unit = {},
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
@@ -553,7 +624,7 @@ private fun NupcarScreen(
                         "눕카",
                         fontSize = 36.sp,
                         fontWeight = FontWeight.Bold,
-                        modifier = if (BuildConfig.DEBUG && state.phase == NupcarPhase.READY) {
+                        modifier = if (BuildConfig.DEBUG && state.phase == NupcarPhase.READY && session is RestState.Idle) {
                             Modifier.combinedClickable(
                                 onClick = {},
                                 onLongClickLabel = "차량 기능 점검 열기",
@@ -562,6 +633,32 @@ private fun NupcarScreen(
                         } else Modifier,
                     )
                     Text("쉬는 시간도, 내 취향대로.", color = NupcarMuted, fontSize = 18.sp)
+                    if (BuildConfig.SIMULATED_VEHICLE) {
+                        Text("시뮬레이션 모드: 실제 차량을 제어하지 않아요.", color = NupcarMint, fontSize = 15.sp)
+                    }
+                }
+
+                val rightPanel: @Composable (Modifier) -> Unit = { panelModifier ->
+                    if (session is RestState.Idle) {
+                        SessionPanel(
+                            state = state,
+                            onStart = onStart,
+                            onPreview = onPreview,
+                            onPause = onPause,
+                            onResume = onResume,
+                            onFinish = onFinish,
+                            modifier = panelModifier,
+                        )
+                    } else {
+                        VehicleSessionPanel(
+                            session = session,
+                            onWakeNow = onWakeNow,
+                            onEmergencyStop = onEmergencyStop,
+                            onRestoreSeat = onRestoreSeat,
+                            onDone = onSessionDone,
+                            modifier = panelModifier,
+                        )
+                    }
                 }
 
                 if (wide) {
@@ -572,28 +669,29 @@ private fun NupcarScreen(
                     ) {
                         ModeSettings(
                             state = state,
+                            editable = session is RestState.Idle,
                             onModeSelected = onModeSelected,
                             onMinutesSelected = onMinutesSelected,
                             onAlarmChanged = onAlarmChanged,
+                            onProfileChanged = onProfileChanged,
                             modifier = Modifier.weight(1.1f),
                         )
-                        SessionPanel(
-                            state = state,
-                            onStart = onStart,
-                            onPreview = onPreview,
-                            onPause = onPause,
-                            onResume = onResume,
-                            onFinish = onFinish,
-                            modifier = Modifier.weight(1f),
-                        )
+                        rightPanel(Modifier.weight(1f))
                     }
                 } else {
-                    ModeSettings(state, onModeSelected, onMinutesSelected, onAlarmChanged)
-                    SessionPanel(state, onStart, onPreview, onPause, onResume, onFinish)
+                    ModeSettings(
+                        state = state,
+                        editable = session is RestState.Idle,
+                        onModeSelected = onModeSelected,
+                        onMinutesSelected = onMinutesSelected,
+                        onAlarmChanged = onAlarmChanged,
+                        onProfileChanged = onProfileChanged,
+                    )
+                    rightPanel(Modifier)
                 }
 
                 Text(
-                    "주차 후 사용해 주세요. 현재 버전에서는 시트·조명·공조를 직접 조절해 주세요.",
+                    "기어가 P일 때만 시작돼요. 시작 전에 시트 뒤 공간을 확인해 주세요. 언제든 즉시 중단할 수 있어요.",
                     color = NupcarMuted,
                     fontSize = 14.sp,
                     lineHeight = 21.sp,
@@ -606,12 +704,14 @@ private fun NupcarScreen(
 @Composable
 private fun ModeSettings(
     state: NupcarState,
+    editable: Boolean,
     onModeSelected: (NupcarMode) -> Unit,
     onMinutesSelected: (Int) -> Unit,
     onAlarmChanged: (Boolean) -> Unit,
+    onProfileChanged: (RestProfile) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val editable = state.phase == NupcarPhase.READY
+    val canEdit = editable && state.phase == NupcarPhase.READY
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -627,7 +727,7 @@ private fun ModeSettings(
                     ChoiceButton(
                         text = mode.title,
                         selected = state.mode == mode,
-                        enabled = editable,
+                        enabled = canEdit,
                         onClick = { onModeSelected(mode) },
                         modifier = Modifier.weight(1f),
                     )
@@ -637,11 +737,11 @@ private fun ModeSettings(
             Spacer(Modifier.height(2.dp))
             Text("휴식 시간", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(10, 20, 30, 60).forEach { minutes ->
+                NupcarMinuteChoices.forEach { minutes ->
                     ChoiceButton(
                         text = minutes.toString() + "분",
                         selected = state.selectedMinutes == minutes,
-                        enabled = editable,
+                        enabled = canEdit,
                         onClick = { onMinutesSelected(minutes) },
                         modifier = Modifier.weight(1f),
                     )
@@ -653,17 +753,211 @@ private fun ModeSettings(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("종료 알림음", fontSize = 18.sp)
+                    Text("기상 사운드", fontSize = 18.sp)
                     Text("기기의 알람 음량으로 재생돼요.", color = NupcarMuted, fontSize = 13.sp)
                 }
                 Switch(
                     checked = state.alarmEnabled,
-                    enabled = editable,
+                    enabled = canEdit,
                     onCheckedChange = onAlarmChanged,
+                )
+            }
+            RestDetailSettings(state.profile, canEdit, onProfileChanged)
+        }
+    }
+}
+
+@Composable
+private fun RestDetailSettings(
+    profile: RestProfile,
+    enabled: Boolean,
+    onChange: (RestProfile) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        DetailSlider("등받이 눕힘", "${(profile.reclineRatio * 100).roundToInt()}%", profile.reclineRatio, 0f..1f, enabled) {
+            onChange(profile.copy(reclineRatio = it))
+        }
+        DetailSlider("조명 밝기", "${(profile.ambientRatio * 100).roundToInt()}%", profile.ambientRatio, 0f..1f, enabled) {
+            onChange(profile.copy(ambientRatio = it))
+        }
+        DetailSlider("실내 온도", "${profile.temperatureC.roundToInt()}°C", profile.temperatureC, 18f..28f, enabled) {
+            onChange(profile.copy(temperatureC = it.roundToInt().toFloat()))
+        }
+        Text("사운드", fontSize = 18.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RestSound.values().forEach { sound ->
+                ChoiceButton(
+                    text = sound.title,
+                    selected = profile.sound == sound,
+                    enabled = enabled,
+                    onClick = { onChange(profile.copy(sound = sound)) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        Text("기상 시 시트 속도", fontSize = 18.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            WakeSpeed.values().forEach { speed ->
+                ChoiceButton(
+                    text = speed.title,
+                    selected = profile.wakeSpeed == speed,
+                    enabled = enabled,
+                    onClick = { onChange(profile.copy(wakeSpeed = speed)) },
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
     }
+}
+
+@Composable
+private fun DetailSlider(
+    label: String,
+    value: String,
+    current: Float,
+    range: ClosedFloatingPointRange<Float>,
+    enabled: Boolean,
+    onChange: (Float) -> Unit,
+) {
+    Column {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, fontSize = 18.sp)
+            Text(value, color = NupcarMint, fontSize = 18.sp)
+        }
+        Slider(value = current, onValueChange = onChange, valueRange = range, enabled = enabled)
+    }
+}
+
+@Composable
+private fun VehicleSessionPanel(
+    session: RestState,
+    onWakeNow: () -> Unit,
+    onEmergencyStop: () -> Unit,
+    onRestoreSeat: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = NupcarPanel),
+    ) {
+        Column(
+            modifier = Modifier.padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            when (session) {
+                RestState.Idle -> Unit
+                is RestState.Preparing -> {
+                    SessionHeading("휴식 환경을 준비하고 있어요", "시트가 천천히 움직여요.")
+                    EmergencyStopButton(onEmergencyStop)
+                }
+                is RestState.Resting -> {
+                    SessionHeading("편안하게 쉬어가요", session.profile.mode.title)
+                    Box(contentAlignment = Alignment.Center) {
+                        if (session.profile.sound == RestSound.BREATHING) BreathingGuide()
+                        Text(
+                            formatNupcarTime(session.remainingMillis),
+                            fontSize = 64.sp,
+                            fontWeight = FontWeight.Light,
+                            color = NupcarMint,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = onWakeNow,
+                        modifier = Modifier.fillMaxWidth().height(66.dp),
+                        shape = RoundedCornerShape(18.dp),
+                    ) {
+                        Text("지금 일어나기", fontSize = 20.sp)
+                    }
+                    EmergencyStopButton(onEmergencyStop)
+                }
+                is RestState.Waking -> {
+                    SessionHeading("휴식을 마무리하고 있어요", session.stage.title)
+                    EmergencyStopButton(onEmergencyStop)
+                }
+                is RestState.RestoringSeat -> {
+                    SessionHeading("시트를 되돌리고 있어요", session.message)
+                    EmergencyStopButton(onEmergencyStop)
+                }
+                is RestState.Finished -> {
+                    SessionHeading("휴식이 끝났어요", "시트와 차량 환경을 휴식 전 상태로 되돌렸어요.")
+                    SessionWarnings(session.warnings)
+                    SessionDoneButton(onDone)
+                }
+                is RestState.Interrupted -> {
+                    SessionHeading("휴식이 중단되었어요", session.reason)
+                    SessionWarnings(session.warnings)
+                    if (session.canRestoreSeat) {
+                        Button(
+                            onClick = onRestoreSeat,
+                            modifier = Modifier.fillMaxWidth().height(66.dp),
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Text("시트 되돌리기", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    SessionDoneButton(onDone)
+                }
+                is RestState.Rejected -> {
+                    SessionHeading("시작하지 않았어요", session.reason)
+                    SessionDoneButton(onDone)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionHeading(title: String, detail: String) {
+    Text(title, fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
+    Text(detail, color = NupcarMuted, fontSize = 17.sp, lineHeight = 25.sp)
+}
+
+@Composable
+private fun SessionWarnings(warnings: List<String>) {
+    warnings.forEach { Text(it, color = Color(0xFFFFC8AE), fontSize = 14.sp, lineHeight = 21.sp) }
+}
+
+@Composable
+private fun SessionDoneButton(onDone: () -> Unit) {
+    OutlinedButton(
+        onClick = onDone,
+        modifier = Modifier.fillMaxWidth().height(56.dp),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Text("확인하고 돌아가기", fontSize = 18.sp)
+    }
+}
+
+@Composable
+private fun EmergencyStopButton(onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(66.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD9423A), contentColor = Color.White),
+    ) {
+        Text("즉시 중단", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun BreathingGuide() {
+    val transition = rememberInfiniteTransition(label = "breathing")
+    val breath by transition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(5_000), RepeatMode.Reverse),
+        label = "breathing-scale",
+    )
+    Box(
+        Modifier
+            .size(280.dp)
+            .scale(breath)
+            .background(Color(0xFF19343F), CircleShape),
+    )
 }
 
 @Composable
