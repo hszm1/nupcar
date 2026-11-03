@@ -189,7 +189,7 @@ class RestSessionController(
             return "주차 상태(P)를 확인할 수 없어 시작하지 않았습니다. 기어를 P에 두고 다시 시도해 주세요."
         }
         return when (optional("뒷좌석 확인") { vehicle.isSeatBehindOccupied() }) {
-            true -> "뒷좌석에 사람이 있어 시트를 눕히지 않았습니다."
+            true -> "뒷좌석에 사람이 있거나 비어 있는지 확인할 수 없어 시트를 눕히지 않았습니다."
             null -> {
                 warnings += "뒷좌석 탑승 여부를 확인하지 못했습니다. 시트 뒤 공간을 직접 확인해 주세요."
                 null

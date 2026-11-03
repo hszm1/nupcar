@@ -115,8 +115,22 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         if (result == null && direction == SeatDirection.STOP) error("시트 정지 응답을 받지 못했습니다")
     }
 
-    override suspend fun isSeatBehindOccupied(): Boolean? = call { done, failed ->
-        seat.getCurrentSeatOccupancy(SeatArea(SeatValue.ROW_2_LEFT), done, failed)
+    /**
+     * The SDK's Boolean is true only for raw value 1, which Android defines as VACANT, and the
+     * emulator confirms it: Empty reads true and Occupied reads false. Anything but vacant,
+     * including an unknown state, therefore counts as occupied. Null means no rear sensor.
+     */
+    override suspend fun isSeatBehindOccupied(): Boolean? {
+        val area = call<SeatArea?> { done, failed ->
+            seat.checkSeatOccupancyCapabilities(
+                onComplete = { config, areas ->
+                    done(areas.firstOrNull { SeatValue.ROW_2_LEFT in it.values }.takeIf { config.accessType.canRead() })
+                },
+                onFailed = failed
+            )
+        } ?: return null
+        val vacant = call<Boolean?> { done, failed -> seat.getCurrentSeatOccupancy(area, done, failed) }
+        return vacant != true
     }
 
     /** The vehicle reports no target temperature while climate is off, so each value is optional. */
