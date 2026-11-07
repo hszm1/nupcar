@@ -7,6 +7,7 @@ import ai.pleos.playground.sample.vehicle.session.RestProfile
 import ai.pleos.playground.sample.vehicle.session.RestSessionService
 import ai.pleos.playground.sample.vehicle.session.RestSound
 import ai.pleos.playground.sample.vehicle.session.RestState
+import ai.pleos.playground.sample.vehicle.session.SeatView
 import ai.pleos.playground.sample.vehicle.session.WakeSpeed
 import ai.pleos.playground.sample.vehicle.ui.screen.SampleApp
 import ai.pleos.playground.sample.vehicle.ui.theme.VehicleSampleAppTheme
@@ -34,6 +35,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -79,7 +81,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -119,6 +126,7 @@ class MainActivity : ComponentActivity() {
             var showVehicleInspector by rememberSaveable { mutableStateOf(false) }
             val state = nupcar.state
             val session = nupcar.session.collectAsStateWithLifecycle().value
+            val seat = nupcar.seat.collectAsStateWithLifecycle().value
             val keepScreenOn =
                 state.phase == NupcarPhase.RUNNING || state.phase == NupcarPhase.PAUSED ||
                     session !is RestState.Idle
@@ -143,6 +151,7 @@ class MainActivity : ComponentActivity() {
                 NupcarScreen(
                     state = state,
                     session = session,
+                    seat = seat,
                     onModeSelected = nupcar::selectMode,
                     onMinutesSelected = nupcar::selectMinutes,
                     onAlarmChanged = nupcar::setAlarmEnabled,
@@ -363,6 +372,7 @@ class NupcarViewModel(application: Application) : AndroidViewModel(application) 
     private val controller get() = app.controller
 
     val session get() = controller.state
+    val seat get() = controller.seat
 
     var state by mutableStateOf(
         profiles.load(NupcarMode.NAP).let {
@@ -593,6 +603,7 @@ private fun NupcarTheme(content: @Composable () -> Unit) {
 private fun NupcarScreen(
     state: NupcarState,
     session: RestState = RestState.Idle,
+    seat: SeatView = SeatView(),
     onModeSelected: (NupcarMode) -> Unit = {},
     onMinutesSelected: (Int) -> Unit = {},
     onAlarmChanged: (Boolean) -> Unit = {},
@@ -652,6 +663,7 @@ private fun NupcarScreen(
                     } else {
                         VehicleSessionPanel(
                             session = session,
+                            seat = seat,
                             onWakeNow = onWakeNow,
                             onEmergencyStop = onEmergencyStop,
                             onRestoreSeat = onRestoreSeat,
@@ -831,6 +843,7 @@ private fun DetailSlider(
 @Composable
 private fun VehicleSessionPanel(
     session: RestState,
+    seat: SeatView,
     onWakeNow: () -> Unit,
     onEmergencyStop: () -> Unit,
     onRestoreSeat: () -> Unit,
@@ -847,6 +860,10 @@ private fun VehicleSessionPanel(
             verticalArrangement = Arrangement.spacedBy(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            val showSeat = session is RestState.Preparing || session is RestState.Resting ||
+                session is RestState.Waking || session is RestState.RestoringSeat ||
+                session is RestState.Interrupted
+            if (showSeat) SeatPicture(seat)
             when (session) {
                 RestState.Idle -> Unit
                 is RestState.Preparing -> {
@@ -906,6 +923,71 @@ private fun VehicleSessionPanel(
                 }
             }
         }
+    }
+}
+
+/**
+ * Side view of the seat. On the Pleos Connect emulator the backrest value never
+ * changes, so the picture plays the commanded motion and says so.
+ */
+@Composable
+private fun SeatPicture(seat: SeatView) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Canvas(modifier = Modifier.size(width = 240.dp, height = 150.dp)) {
+            val unit = size.height / 10f
+            val floorY = size.height - unit
+            val hingeX = size.width * 0.62f
+            val cushionTop = floorY - unit * 3.2f
+            drawLine(NupcarMuted.copy(alpha = 0.4f), Offset(0f, floorY), Offset(size.width, floorY), unit * 0.25f, StrokeCap.Round)
+            drawRoundRect(
+                color = NupcarMint.copy(alpha = 0.55f),
+                topLeft = Offset(hingeX - unit * 0.6f, cushionTop + unit * 1.1f),
+                size = Size(unit * 1.2f, floorY - cushionTop - unit * 1.1f),
+                cornerRadius = CornerRadius(unit * 0.3f),
+            )
+            drawRoundRect(
+                color = NupcarMint,
+                topLeft = Offset(hingeX - unit * 0.3f, cushionTop),
+                size = Size(size.width * 0.34f, unit * 1.2f),
+                cornerRadius = CornerRadius(unit * 0.6f),
+            )
+            // 0 recline leans the backrest 12° back from vertical, full recline lays it flat.
+            val degrees = -(12f + seat.recline.coerceIn(0f, 1f) * 78f)
+            val pivot = Offset(hingeX, cushionTop + unit * 0.6f)
+            rotate(degrees, pivot) {
+                val length = unit * 6f
+                drawRoundRect(
+                    color = NupcarMint,
+                    topLeft = Offset(pivot.x - unit * 0.6f, pivot.y - length),
+                    size = Size(unit * 1.2f, length),
+                    cornerRadius = CornerRadius(unit * 0.6f),
+                )
+                drawRoundRect(
+                    color = NupcarMint.copy(alpha = 0.8f),
+                    topLeft = Offset(pivot.x - unit * 0.7f, pivot.y - length - unit * 1.7f),
+                    size = Size(unit * 1.4f, unit * 1.4f),
+                    cornerRadius = CornerRadius(unit * 0.5f),
+                )
+            }
+        }
+        Text(
+            "등받이 눕힘 ${(seat.recline * 100).roundToInt()}%",
+            fontSize = 16.sp,
+            color = NupcarMint,
+        )
+        Text(
+            if (seat.simulated) {
+                "시각화 화면이에요. 에뮬레이터에서는 등받이 값이 바뀌지 않아요" +
+                    (seat.position?.let { " (실제 값 $it)" } ?: "")
+            } else {
+                "실제 시트 위치예요" + (seat.position?.let { " (값 $it)" } ?: "")
+            },
+            fontSize = 13.sp,
+            color = NupcarMuted,
+        )
     }
 }
 

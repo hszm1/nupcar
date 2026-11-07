@@ -24,6 +24,8 @@ class RestSessionControllerTest {
         lightRampSteps = 3,
         parkedPollMillis = 20,
         tickMillis = 20,
+        visualSeatSpeed = 20f,
+        visualTickMillis = 5,
         seat = SeatMoveTimings(pollMillis = 5, stallMillis = 150, maxMoveMillis = 3_000)
     )
     private val controller = RestSessionController({ vehicle }, audio, scope, timings = timings)
@@ -62,6 +64,33 @@ class RestSessionControllerTest {
         assertTrue(audio.wakePlayed)
         assertTrue(audio.stopped)
         assertTrue(finished.warnings.isEmpty())
+    }
+
+    @Test
+    fun seatPictureFollowsCommandsWhenTheVehicleNeverReportsMotion() = runBlocking<Unit> {
+        // The Pleos Connect emulator accepts backrest commands but keeps reporting 0.
+        vehicle.setPosition(0)
+        vehicle.seatJammed = true
+
+        controller.start(profile)
+        awaitResting()
+        val reclined = controller.seat.value
+        assertTrue(reclined.simulated)
+        assertEquals(profile.reclineRatio * 0.7f, reclined.recline, 0.01f)
+        assertEquals(0, reclined.position)
+
+        controller.wakeNow()
+        awaitState<RestState.Finished>()
+        assertEquals(0f, controller.seat.value.recline, 0.01f)
+    }
+
+    @Test
+    fun seatPictureShowsTheRealSeatWhenItMoves() = runBlocking<Unit> {
+        controller.start(profile)
+        awaitResting()
+        val view = controller.seat.value
+        assertFalse(view.simulated)
+        assertEquals((100 - vehicle.backrestPosition()) / 100f, view.recline, 0.03f)
     }
 
     @Test

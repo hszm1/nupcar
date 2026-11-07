@@ -43,6 +43,18 @@ sealed interface RestState {
     data class Rejected(val reason: String) : RestState
 }
 
+/**
+ * What the seat picture shows. [recline] is 0 upright to 1 fully reclined over the
+ * seat's whole range. While the vehicle never reports a position change, as on the
+ * Pleos Connect emulator, the picture follows the commanded motion instead and
+ * [simulated] is true.
+ */
+data class SeatView(
+    val recline: Float = 0f,
+    val simulated: Boolean = true,
+    val position: Int? = null
+)
+
 data class RestTimings(
     val wakeSoundMillis: Long = 15_000,
     val lightRampMillis: Long = 15_000,
@@ -50,6 +62,9 @@ data class RestTimings(
     val parkedPollMillis: Long = 1_000,
     val tickMillis: Long = 1_000,
     val unknownParkLimit: Int = 3,
+    /** Share of the full seat range the picture moves per second when simulated. */
+    val visualSeatSpeed: Float = 0.1f,
+    val visualTickMillis: Long = 50,
     val seat: SeatMoveTimings = SeatMoveTimings()
 )
 
@@ -65,6 +80,13 @@ class RestSessionController(
 ) {
     private val _state = MutableStateFlow<RestState>(RestState.Idle)
     val state: StateFlow<RestState> = _state.asStateFlow()
+
+    private val _seat = MutableStateFlow(SeatView())
+    val seat: StateFlow<SeatView> = _seat.asStateFlow()
+
+    /** Becomes true once the vehicle reports a real backrest movement. */
+    private var seatReportsMotion = false
+    private var seatBounds: IntRange? = null
 
     /** Connects on the first session, so opening the app never touches the vehicle. */
     private val vehicle by lazy(vehicleProvider)
@@ -132,7 +154,7 @@ class RestSessionController(
         _state.value = RestState.RestoringSeat("시트를 휴식 전 위치로 되돌리는 중입니다")
         sessionJob = scope.launch {
             try {
-                seatMover.moveTo(saved.backrest, WakeSpeed.NORMAL, ::requireParked)
+                moveSeat(saved.backrest, uprightView(saved), WakeSpeed.NORMAL, guardVisual = true)
                 snapshot = null
                 _state.value = RestState.Finished(warnings.toList())
             } catch (e: CancellationException) {
@@ -167,10 +189,20 @@ class RestSessionController(
         val saved = Snapshot(backrest, optional("공조 상태 확인") { vehicle.readClimate() },
             optional("조명 상태 확인") { vehicle.readAmbient() })
         snapshot = saved
+        seatBounds = bounds
+        _seat.value = if (seatReportsMotion) {
+            SeatView(share(bounds, backrest), simulated = false, position = backrest)
+        } else {
+            SeatView(position = backrest)
+        }
 
         coroutineScope {
             val watchdog = launch { watchParkedState() }
-            seatMover.moveTo(reclineTarget(profile, bounds, backrest), WakeSpeed.NORMAL, ::requireParked)
+            moveSeat(
+                reclineTarget(profile, bounds, backrest),
+                profile.reclineRatio.coerceIn(0f, 1f) * MAX_RECLINE_SHARE,
+                WakeSpeed.NORMAL
+            )
             val ambientBounds = optional("조명 범위 확인") { vehicle.ambientBounds() }
             applyRestEnvironment(profile, ambientBounds)
             audio.playRest(profile.sound)
@@ -196,6 +228,68 @@ class RestSessionController(
             }
             false -> null
         }
+    }
+
+    /**
+     * Moves the real seat and the seat picture together. When the vehicle reports the
+     * seat moving, the picture follows the reported position; otherwise it plays the
+     * commanded motion at the same rhythm so the session can still be shown.
+     */
+    private suspend fun moveSeat(
+        target: Int,
+        visualTarget: Float,
+        speed: WakeSpeed,
+        guardVisual: Boolean = false
+    ) = coroutineScope {
+        val bounds = seatBounds
+        var start: Int? = null
+        var realMotion = false
+        val picture = if (seatReportsMotion) null else launch { animateSeat(visualTarget, speed, guardVisual) }
+        seatMover.moveTo(target, speed, ::requireParked) { position ->
+            if (start == null) start = position
+            if (!realMotion && kotlin.math.abs(position - (start ?: position)) > 1) {
+                realMotion = true
+                seatReportsMotion = true
+                picture?.cancel()
+            }
+            _seat.value = if (seatReportsMotion && bounds != null) {
+                SeatView(share(bounds, position), simulated = false, position = position)
+            } else {
+                _seat.value.copy(position = position)
+            }
+        }
+        picture?.join()
+    }
+
+    private suspend fun animateSeat(target: Float, speed: WakeSpeed, guard: Boolean) {
+        val tick = timings.visualTickMillis.coerceAtLeast(1)
+        val step = timings.visualSeatSpeed * tick / 1000f
+        var movedFor = 0L
+        var sinceGuard = 0L
+        while (kotlin.math.abs(_seat.value.recline - target) > 0.0005f) {
+            if (guard && sinceGuard == 0L) requireParked()
+            delay(tick)
+            sinceGuard = (sinceGuard + tick) % GUARD_EVERY_MILLIS
+            val current = _seat.value.recline
+            val next = if (current < target) min(target, current + step) else max(target, current - step)
+            _seat.value = _seat.value.copy(recline = next, simulated = true)
+            movedFor += tick
+            if (movedFor >= speed.moveMillis) {
+                delay(speed.pauseMillis)
+                movedFor = 0
+            }
+        }
+    }
+
+    private fun uprightView(saved: Snapshot): Float {
+        val bounds = seatBounds
+        return if (seatReportsMotion && bounds != null) share(bounds, saved.backrest) else 0f
+    }
+
+    /** Recline share of a position, with lower positions more reclined. */
+    private fun share(bounds: IntRange, position: Int): Float {
+        val span = (bounds.last - bounds.first).coerceAtLeast(1)
+        return ((bounds.last - position).toFloat() / span).coerceIn(0f, 1f)
     }
 
     /** Assumes lower positions are more reclined, as Android Automotive defines this property. */
@@ -240,7 +334,7 @@ class RestSessionController(
         rampLight(saved, ambientBounds)
 
         _state.value = RestState.Waking(profile, WakeStage.SEAT)
-        seatMover.moveTo(saved.backrest, profile.wakeSpeed, ::requireParked)
+        moveSeat(saved.backrest, uprightView(saved), profile.wakeSpeed)
 
         _state.value = RestState.Waking(profile, WakeStage.RESTORE)
         audio.stop()
@@ -317,5 +411,6 @@ class RestSessionController(
         /** Never asks for the full mechanical range, which could reach whatever is behind the seat. */
         const val MAX_RECLINE_SHARE = 0.7f
         const val WAKE_LIGHT_RATIO = 0.7f
+        const val GUARD_EVERY_MILLIS = 500L
     }
 }

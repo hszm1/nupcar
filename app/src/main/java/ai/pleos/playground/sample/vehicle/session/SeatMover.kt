@@ -28,18 +28,24 @@ class SeatMover(
     suspend fun moveTo(
         target: Int,
         speed: WakeSpeed = WakeSpeed.NORMAL,
-        guard: suspend () -> Unit
+        guard: suspend () -> Unit,
+        onPosition: (Int) -> Unit = {}
     ) {
         try {
-            run(target, speed, guard)
+            run(target, speed, guard, onPosition)
         } finally {
             withContext(NonCancellable) { stopWithRetry() }
         }
     }
 
-    private suspend fun run(target: Int, speed: WakeSpeed, guard: suspend () -> Unit) {
+    private suspend fun run(
+        target: Int,
+        speed: WakeSpeed,
+        guard: suspend () -> Unit,
+        onPosition: (Int) -> Unit
+    ) {
         guard()
-        val start = readPosition()
+        val start = readPosition().also(onPosition)
         val tolerance = 1
         if (abs(start - target) <= tolerance) return
 
@@ -63,7 +69,7 @@ class SeatMover(
             }
             delay(timings.pollMillis)
 
-            val position = readPosition()
+            val position = readPosition().also(onPosition)
             val distance = abs(position - target)
             val crossed = (start - target) * (position - target) < 0
             if (distance <= tolerance || crossed) return
