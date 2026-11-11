@@ -94,7 +94,7 @@ adb forward tcp:8088 tcp:8088
 ## 구조
 
 ```text
-app/src/main/java/ai/pleos/playground/sample/vehicle/
+app/src/main/java/com/arc/nupcar/
 ├─ MainActivity.kt            눕카 화면(Compose)과 등받이 시각화
 ├─ NupcarApplication.kt       세션 컨트롤러 생성
 └─ session/

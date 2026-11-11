@@ -11,12 +11,12 @@ val sampleVersionPatch = 0
 val simulatedVehicle = providers.gradleProperty("nupcar.simulated").orNull == "true"
 
 android {
-    namespace = "ai.pleos.playground.sample.vehicle"
+    namespace = "com.arc.nupcar"
     compileSdk = targetAndroidSdk
     useLibrary("android.car")
 
     defaultConfig {
-        applicationId = "ai.pleos.playground.sample.vehicle"
+        applicationId = "com.arc.nupcar"
         minSdk = 28
         targetSdk = targetAndroidSdk
         versionCode =
