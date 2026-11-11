@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -9,6 +11,16 @@ val sampleVersionMajor = 1
 val sampleVersionMinor = 0
 val sampleVersionPatch = 0
 val simulatedVehicle = providers.gradleProperty("nupcar.simulated").orNull == "true"
+
+/**
+ * Release signing comes from local.properties, which git ignores, so the key and its
+ * password never enter the repository. Without these entries the release build is unsigned.
+ */
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val releaseStoreFile: String? = localProperties.getProperty("nupcar.release.storeFile")
 
 android {
     namespace = "com.arc.nupcar"
@@ -38,8 +50,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = file(releaseStoreFile)
+                storePassword = localProperties.getProperty("nupcar.release.storePassword")
+                keyAlias = localProperties.getProperty("nupcar.release.keyAlias")
+                keyPassword = localProperties.getProperty("nupcar.release.keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
