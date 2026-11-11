@@ -219,7 +219,7 @@ class RestSessionController(
             )
             val ambientBounds = optional("조명 범위 확인") { vehicle.ambientBounds() }
             applyRestEnvironment(profile, ambientBounds)
-            audio.playRest(profile.sound)
+            audio.playRest(profile.sound, followBreath = profile.breathingGuide)
             val soundStartedAt = now()
 
             rest(profile, soundStartedAt)

@@ -14,19 +14,25 @@ class GeneratedRestAudio : RestAudio {
     @Volatile private var running = false
     private var worker: Thread? = null
 
-    override fun playRest(sound: RestSound) {
+    override fun playRest(sound: RestSound, followBreath: Boolean) {
         stop()
         resetFilters()
-        when (sound) {
-            RestSound.NONE -> Unit
-            RestSound.WHITE_NOISE -> play(AudioAttributes.USAGE_MEDIA, REST_FADE_IN_SECONDS) { index ->
-                val swell = sin(2.0 * PI * index / (SAMPLE_RATE * SWELL_SECONDS)).toFloat()
+        val source: ((Int) -> Float)? = when (sound) {
+            RestSound.NONE -> null
+            RestSound.WHITE_NOISE -> { index ->
+                // The slow swell is left out when the breath shapes the volume instead.
+                val swell = if (followBreath) 0f else sin(2.0 * PI * index / (SAMPLE_RATE * SWELL_SECONDS)).toFloat()
                 pinkNoise() * (0.85f + 0.15f * swell)
             }
-            RestSound.SOFT_NOISE -> play(AudioAttributes.USAGE_MEDIA, REST_FADE_IN_SECONDS) { noise(smoothing = 0.97f, gain = 0.5f) }
-            RestSound.BREATHING -> play(AudioAttributes.USAGE_MEDIA, REST_FADE_IN_SECONDS) { index ->
+            RestSound.SOFT_NOISE -> { _ -> noise(smoothing = 0.97f, gain = 0.5f) }
+        }
+        source ?: return
+        play(AudioAttributes.USAGE_MEDIA, REST_FADE_IN_SECONDS) { index ->
+            if (followBreath) {
                 val level = BreathCycle.level(index * 1000L / SAMPLE_RATE)
-                noise(smoothing = 0.97f, gain = 0.5f) * (0.25f + 0.75f * level)
+                source(index) * (BREATH_FLOOR + (1f - BREATH_FLOOR) * level)
+            } else {
+                source(index)
             }
         }
     }
@@ -137,6 +143,8 @@ class GeneratedRestAudio : RestAudio {
         /** Divides the 600-second loop evenly, so the swell has no jump when the loop wraps. */
         const val SWELL_SECONDS = 15
         const val REST_FADE_IN_SECONDS = 3f
+        /** Volume share left at the bottom of an out-breath, so the sound never drops out. */
+        const val BREATH_FLOOR = 0.3f
         /** About the loudness of the previous white noise, with peaks near half scale. */
         const val PINK_GAIN = 0.05f
         const val WAKE_NOTE_SECONDS = 1.6f

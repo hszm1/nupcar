@@ -14,8 +14,7 @@ enum class NupcarMode(
 enum class RestSound(val title: String) {
     NONE("없음"),
     WHITE_NOISE("백색소음"),
-    SOFT_NOISE("잔잔한 소리"),
-    BREATHING("호흡 가이드")
+    SOFT_NOISE("잔잔한 소리")
 }
 
 /**
@@ -38,12 +37,20 @@ data class RestProfile(
     val temperatureC: Float,
     val sound: RestSound,
     val wakeSpeed: WakeSpeed,
-    val wakeSoundEnabled: Boolean = true
+    val wakeSoundEnabled: Boolean = true,
+    /**
+     * Shows a breathing circle to follow during the rest, whatever the sound. The chosen
+     * sound then swells and fades with the same breath, so it can be followed eyes closed.
+     */
+    val breathingGuide: Boolean = false
 ) {
     companion object {
         fun default(mode: NupcarMode): RestProfile = when (mode) {
             NupcarMode.NAP -> RestProfile(mode, mode.defaultMinutes, 0.8f, 0.05f, 23f, RestSound.WHITE_NOISE, WakeSpeed.SLOW)
-            NupcarMode.MEDITATION -> RestProfile(mode, mode.defaultMinutes, 0.3f, 0.3f, 24f, RestSound.BREATHING, WakeSpeed.SLOW)
+            NupcarMode.MEDITATION -> RestProfile(
+                mode, mode.defaultMinutes, 0.3f, 0.3f, 24f, RestSound.SOFT_NOISE, WakeSpeed.SLOW,
+                breathingGuide = true
+            )
             NupcarMode.ASMR -> RestProfile(mode, mode.defaultMinutes, 0.5f, 0.1f, 23f, RestSound.SOFT_NOISE, WakeSpeed.SLOW)
             NupcarMode.FREE -> RestProfile(mode, mode.defaultMinutes, 0.5f, 0.2f, 23f, RestSound.SOFT_NOISE, WakeSpeed.SLOW)
         }

@@ -30,7 +30,8 @@ interface VehicleGateway {
 }
 
 interface RestAudio {
-    fun playRest(sound: RestSound)
+    /** With [followBreath], the sound swells and fades with [BreathCycle]. */
+    fun playRest(sound: RestSound, followBreath: Boolean = false)
     fun playWake()
     fun stop()
 }

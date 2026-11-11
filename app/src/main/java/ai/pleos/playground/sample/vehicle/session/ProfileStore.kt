@@ -8,13 +8,18 @@ class ProfileStore(context: Context) {
     fun load(mode: NupcarMode): RestProfile {
         val base = RestProfile.default(mode)
         val key = mode.name
+        val storedSound = prefs.getString("$key.sound", null)
+        // The breathing guide used to be a sound. A profile saved that way keeps the guide
+        // and falls back to the mode's default sound.
+        val guideFromOldSound = storedSound == LEGACY_BREATHING_SOUND
         return base.copy(
             durationMinutes = prefs.getInt("$key.minutes", base.durationMinutes),
             reclineRatio = prefs.getFloat("$key.recline", base.reclineRatio),
             ambientRatio = prefs.getFloat("$key.ambient", base.ambientRatio),
             temperatureC = prefs.getFloat("$key.temperature", base.temperatureC),
-            sound = enumOrDefault(prefs.getString("$key.sound", null), base.sound),
-            wakeSpeed = enumOrDefault(prefs.getString("$key.wake", null), base.wakeSpeed)
+            sound = enumOrDefault(storedSound, base.sound),
+            wakeSpeed = enumOrDefault(prefs.getString("$key.wake", null), base.wakeSpeed),
+            breathingGuide = prefs.getBoolean("$key.breathing", guideFromOldSound || base.breathingGuide)
         )
     }
 
@@ -27,7 +32,12 @@ class ProfileStore(context: Context) {
             .putFloat("$key.temperature", profile.temperatureC)
             .putString("$key.sound", profile.sound.name)
             .putString("$key.wake", profile.wakeSpeed.name)
+            .putBoolean("$key.breathing", profile.breathingGuide)
             .apply()
+    }
+
+    private companion object {
+        const val LEGACY_BREATHING_SOUND = "BREATHING"
     }
 
     private inline fun <reified T : Enum<T>> enumOrDefault(name: String?, fallback: T): T =

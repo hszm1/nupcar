@@ -805,6 +805,25 @@ private fun RestDetailSettings(
                 )
             }
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("호흡 가이드", fontSize = 18.sp)
+                Text(
+                    "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
+                    color = NupcarMuted,
+                    fontSize = 13.sp,
+                )
+            }
+            Switch(
+                checked = profile.breathingGuide,
+                enabled = enabled,
+                onCheckedChange = { onChange(profile.copy(breathingGuide = it)) },
+            )
+        }
         Text("기상 시 시트 속도", fontSize = 18.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             WakeSpeed.values().forEach { speed ->
@@ -870,7 +889,7 @@ private fun VehicleSessionPanel(
                 }
                 is RestState.Resting -> {
                     SessionHeading("편안하게 쉬어가요", session.profile.mode.title)
-                    if (session.profile.sound == RestSound.BREATHING) {
+                    if (session.profile.breathingGuide) {
                         BreathingGuide(session.soundStartedAtMillis) {
                             RestTimer(session.remainingMillis)
                         }

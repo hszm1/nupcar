@@ -53,6 +53,7 @@ class RestSessionControllerTest {
         assertTrue("seat should be reclined", vehicle.backrestPosition() < before - 20)
         assertEquals(profile.temperatureC, vehicle.climate.temperatureC)
         assertEquals(RestSound.WHITE_NOISE, audio.restSound)
+        assertEquals(false, audio.followBreath)
 
         controller.wakeNow()
         val finished = awaitState<RestState.Finished>()
@@ -252,12 +253,23 @@ class RestSessionControllerTest {
         assertEquals(40, vehicle.backrestPosition())
     }
 
+    @Test
+    fun breathingGuideWorksWithAnySound() = runBlocking<Unit> {
+        controller.start(profile.copy(sound = RestSound.WHITE_NOISE, breathingGuide = true))
+        val resting = awaitResting() as RestState.Resting
+        assertEquals(RestSound.WHITE_NOISE, audio.restSound)
+        assertEquals(true, audio.followBreath)
+        assertTrue(resting.profile.breathingGuide)
+    }
+
     private class RecordingAudio : RestAudio {
         var restSound: RestSound? = null
+        var followBreath: Boolean? = null
         var wakePlayed = false
         var stopped = false
-        override fun playRest(sound: RestSound) {
+        override fun playRest(sound: RestSound, followBreath: Boolean) {
             restSound = sound
+            this.followBreath = followBreath
         }
         override fun playWake() {
             wakePlayed = true
