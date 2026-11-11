@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -8,14 +10,26 @@ val targetAndroidSdk = 35
 val sampleVersionMajor = 1
 val sampleVersionMinor = 0
 val sampleVersionPatch = 0
+val simulatedVehicle = providers.gradleProperty("nupcar.simulated").orNull == "true"
+
+/**
+ * Release signing comes from local.properties, which git ignores, so the key and its
+ * password never enter the repository. Without these entries the release build is unsigned.
+ */
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val releaseStoreFile: String? = localProperties.getProperty("nupcar.release.storeFile")
 
 android {
-    namespace = "ai.pleos.playground.sample.vehicle"
+    namespace = "com.arc.nupcar"
     compileSdk = targetAndroidSdk
+    useLibrary("android.car")
 
     defaultConfig {
-        applicationId = "ai.pleos.playground.sample.vehicle"
-        minSdk = 23
+        applicationId = "com.arc.nupcar"
+        minSdk = 28
         targetSdk = targetAndroidSdk
         versionCode =
             targetAndroidSdk * 1_000_000 +
@@ -31,11 +45,25 @@ android {
             "\"${libs.versions.vehicleSdk.get()}\""
         )
 
+        buildConfigField("boolean", "SIMULATED_VEHICLE", simulatedVehicle.toString())
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = file(releaseStoreFile)
+                storePassword = localProperties.getProperty("nupcar.release.storePassword")
+                keyAlias = localProperties.getProperty("nupcar.release.keyAlias")
+                keyPassword = localProperties.getProperty("nupcar.release.keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -65,6 +93,7 @@ android {
 dependencies {
     implementation(libs.vehicle.sdk)
     implementation(libs.kotlin.reflect)
+    implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
