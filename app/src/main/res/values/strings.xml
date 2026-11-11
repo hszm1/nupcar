@@ -2,4 +2,7 @@
     <string name="app_name">눕카</string>
     <string name="session_channel">휴식 세션</string>
     <string name="session_running">휴식 세션이 진행 중입니다</string>
+    <string name="alert_channel">휴식 종료 알림</string>
+    <string name="video_end_title">%1$s 시간이 끝났어요</string>
+    <string name="video_end_text">조명을 밝히고 등받이를 천천히 세울게요.</string>
 </resources>

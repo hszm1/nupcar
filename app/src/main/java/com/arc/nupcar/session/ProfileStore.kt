@@ -13,7 +13,8 @@ class ProfileStore(context: Context) {
         // and falls back to the mode's default sound.
         val guideFromOldSound = storedSound == LEGACY_BREATHING_SOUND
         return base.copy(
-            durationMinutes = prefs.getInt("$key.minutes", base.durationMinutes),
+            durationMinutes = prefs.getInt("$key.minutes", base.durationMinutes)
+                .coerceIn(MIN_REST_MINUTES, MAX_REST_MINUTES),
             reclineRatio = prefs.getFloat("$key.recline", base.reclineRatio),
             ambientRatio = prefs.getFloat("$key.ambient", base.ambientRatio),
             temperatureC = prefs.getFloat("$key.temperature", base.temperatureC),

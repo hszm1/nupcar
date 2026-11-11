@@ -7,9 +7,12 @@ enum class NupcarMode(
 ) {
     NAP("낮잠", "잠깐 눈을 붙이고 쉬어가요.", 20),
     MEDITATION("명상", "잠시 호흡과 나에게 집중해요.", 10),
-    ASMR("ASMR", "편안한 소리와 함께하는 휴식.", 30),
-    FREE("자유 휴식", "원하는 환경을 조합해 저장해요.", 15),
+    VIDEO("영상 시청", "편한 자세로 맞춘 뒤 다른 앱에서 영상을 즐겨요.", 60),
 }
+
+/** Rest length the time wheel allows, in minutes: 1 minute up to 23 hours 59 minutes. */
+const val MIN_REST_MINUTES = 1
+const val MAX_REST_MINUTES = 23 * 60 + 59
 
 enum class RestSound(val title: String) {
     NONE("없음"),
@@ -44,6 +47,12 @@ data class RestProfile(
      */
     val breathingGuide: Boolean = false
 ) {
+    /**
+     * Video plays in another app, so Nupcar plays no rest sound and ends the session with a
+     * notification instead of a wake-up sound that would talk over the video.
+     */
+    val quietWake: Boolean get() = mode == NupcarMode.VIDEO
+
     companion object {
         fun default(mode: NupcarMode): RestProfile = when (mode) {
             NupcarMode.NAP -> RestProfile(mode, mode.defaultMinutes, 0.8f, 0.05f, 23f, RestSound.WHITE_NOISE, WakeSpeed.SLOW)
@@ -51,8 +60,11 @@ data class RestProfile(
                 mode, mode.defaultMinutes, 0.3f, 0.3f, 24f, RestSound.SOFT_NOISE, WakeSpeed.SLOW,
                 breathingGuide = true
             )
-            NupcarMode.ASMR -> RestProfile(mode, mode.defaultMinutes, 0.5f, 0.1f, 23f, RestSound.SOFT_NOISE, WakeSpeed.SLOW)
-            NupcarMode.FREE -> RestProfile(mode, mode.defaultMinutes, 0.5f, 0.2f, 23f, RestSound.SOFT_NOISE, WakeSpeed.SLOW)
+            // A slight recline for watching a screen, and dim light that still avoids glare.
+            NupcarMode.VIDEO -> RestProfile(
+                mode, mode.defaultMinutes, 0.35f, 0.15f, 23f, RestSound.NONE, WakeSpeed.SLOW,
+                wakeSoundEnabled = false
+            )
         }
     }
 }
