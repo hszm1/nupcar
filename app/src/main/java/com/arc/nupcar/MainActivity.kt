@@ -2,6 +2,15 @@ package com.arc.nupcar
 
 import com.arc.nupcar.explorer.VehicleDomain
 import com.arc.nupcar.session.BreathCycle
+import com.arc.nupcar.session.MAX_RECLINE_SHARE
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Brush
 import com.arc.nupcar.session.MAX_REST_MINUTES
 import com.arc.nupcar.session.MIN_REST_MINUTES
 import com.arc.nupcar.session.NupcarMode
@@ -737,6 +746,17 @@ private fun NupcarScreen(
     }
 }
 
+/** The settings tabs along the bottom of the settings card; the chosen one opens above them. */
+private enum class SettingTab(val title: String) {
+    TIME("시간"),
+    SEAT("시트"),
+    LIGHT("조명"),
+    CLIMATE("온도"),
+    SOUND("사운드"),
+}
+
+private val NupcarPanelDeep = Color(0xFF0B1E27)
+
 @Composable
 private fun ModeSettings(
     state: NupcarState,
@@ -748,13 +768,14 @@ private fun ModeSettings(
     modifier: Modifier = Modifier,
 ) {
     val canEdit = editable && state.phase == NupcarPhase.READY
+    var tab by rememberSaveable { mutableStateOf(SettingTab.TIME) }
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = NupcarPanel),
     ) {
         Column(
-            modifier = Modifier.padding(24.dp),
+            modifier = Modifier.padding(28.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Text("어떻게 쉬고 싶으세요?", fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
@@ -770,115 +791,294 @@ private fun ModeSettings(
                 }
             }
             Text(state.mode.description, color = NupcarMuted, fontSize = 16.sp)
-            Spacer(Modifier.height(2.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+
+            // The chosen tab's controls rise into this area from the tab bar below.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(400.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(NupcarPanelDeep)
+                    .padding(horizontal = 32.dp, vertical = 28.dp),
             ) {
-                Text(
-                    if (state.profile.quietWake) "시청 시간" else "휴식 시간",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(formatMinutes(state.selectedMinutes), color = NupcarMint, fontSize = 18.sp)
-            }
-            TimeWheel(
-                totalMinutes = state.selectedMinutes,
-                enabled = canEdit,
-                onChange = onMinutesSelected,
-            )
-            if (state.profile.quietWake) {
-                Text(
-                    "시청 시간이 끝나면 영상 소리를 방해하지 않도록 알림으로 알려 드리고, 조명을 밝힌 뒤 등받이를 세워요.",
-                    color = NupcarMuted,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                )
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("기상 사운드", fontSize = 18.sp)
-                        Text("기기의 알람 음량으로 재생돼요.", color = NupcarMuted, fontSize = 13.sp)
+                AnimatedContent(
+                    targetState = tab,
+                    transitionSpec = {
+                        (slideInVertically(tween(340)) { it / 5 } + fadeIn(tween(340))) togetherWith
+                            fadeOut(tween(140))
+                    },
+                    label = "setting-panel",
+                ) { current ->
+                    when (current) {
+                        SettingTab.TIME -> TimePanel(state, canEdit, onMinutesSelected)
+                        SettingTab.SEAT -> SeatPanel(state.profile, canEdit, onProfileChanged)
+                        SettingTab.LIGHT -> LightPanel(state.profile, canEdit, onProfileChanged)
+                        SettingTab.CLIMATE -> ClimatePanel(state.profile, canEdit, onProfileChanged)
+                        SettingTab.SOUND -> SoundPanel(state, canEdit, onAlarmChanged, onProfileChanged)
                     }
-                    Switch(
-                        checked = state.alarmEnabled,
-                        enabled = canEdit,
-                        onCheckedChange = onAlarmChanged,
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingTab.values().forEach { item ->
+                    SettingTabButton(
+                        title = item.title,
+                        value = tabValue(item, state),
+                        selected = item == tab,
+                        onClick = { tab = item },
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
-            RestDetailSettings(state.profile, canEdit, onProfileChanged)
+        }
+    }
+}
+
+private fun tabValue(tab: SettingTab, state: NupcarState): String {
+    val profile = state.profile
+    return when (tab) {
+        SettingTab.TIME -> formatMinutes(state.selectedMinutes)
+        SettingTab.SEAT -> "${(profile.reclineRatio * 100).roundToInt()}%"
+        SettingTab.LIGHT -> "${(profile.ambientRatio * 100).roundToInt()}%"
+        SettingTab.CLIMATE -> "${profile.temperatureC.roundToInt()}°C"
+        SettingTab.SOUND -> when {
+            profile.quietWake -> "알림"
+            profile.breathingGuide -> profile.sound.title + " · 호흡"
+            else -> profile.sound.title
         }
     }
 }
 
 @Composable
-private fun RestDetailSettings(
-    profile: RestProfile,
-    enabled: Boolean,
-    onChange: (RestProfile) -> Unit,
+private fun SettingTabButton(
+    title: String,
+    value: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        DetailSlider("등받이 눕힘", "${(profile.reclineRatio * 100).roundToInt()}%", profile.reclineRatio, 0f..1f, enabled) {
-            onChange(profile.copy(reclineRatio = it))
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (selected) NupcarMint else Color(0xFF19343F))
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            title,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) NupcarBackground else Color(0xFFEAF5F5),
+        )
+        Text(
+            value,
+            fontSize = 14.sp,
+            maxLines = 1,
+            color = if (selected) NupcarBackground.copy(alpha = 0.75f) else NupcarMuted,
+        )
+    }
+}
+
+@Composable
+private fun PanelTitle(title: String, detail: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Text(detail, fontSize = 15.sp, color = NupcarMuted, lineHeight = 21.sp)
+    }
+}
+
+@Composable
+private fun TimePanel(state: NupcarState, enabled: Boolean, onMinutesSelected: (Int) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            PanelTitle(
+                if (state.profile.quietWake) "시청 시간" else "휴식 시간",
+                "휠을 위아래로 돌려 1분 단위로 맞춰요.",
+            )
+            Text(formatMinutes(state.selectedMinutes), fontSize = 40.sp, fontWeight = FontWeight.Light, color = NupcarMint)
         }
-        DetailSlider("조명 밝기", "${(profile.ambientRatio * 100).roundToInt()}%", profile.ambientRatio, 0f..1f, enabled) {
-            onChange(profile.copy(ambientRatio = it))
-        }
-        DetailSlider("실내 온도", "${profile.temperatureC.roundToInt()}°C", profile.temperatureC, 18f..28f, enabled) {
-            onChange(profile.copy(temperatureC = it.roundToInt().toFloat()))
-        }
-        // Video plays its own sound in another app, so Nupcar adds none and shows no guide.
-        if (!profile.quietWake) {
-            Text("사운드", fontSize = 18.sp)
+        TimeWheel(totalMinutes = state.selectedMinutes, enabled = enabled, onChange = onMinutesSelected)
+    }
+}
+
+@Composable
+private fun SeatPanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(32.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Preview of the backrest at the chosen recline, on the same safe-range scale.
+        SeatDrawing(
+            recline = profile.reclineRatio.coerceIn(0f, 1f) * MAX_RECLINE_SHARE,
+            modifier = Modifier.size(width = 300.dp, height = 190.dp),
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            PanelTitle("등받이", "안전 범위(최대 70%) 안에서 얼마나 눕힐지 정해요.")
+            DetailSlider("눕힘", "${(profile.reclineRatio * 100).roundToInt()}%", profile.reclineRatio, 0f..1f, enabled) {
+                onChange(profile.copy(reclineRatio = it))
+            }
+            Text(if (profile.quietWake) "종료 시 시트 속도" else "기상 시 시트 속도", fontSize = 17.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RestSound.values().forEach { sound ->
+                WakeSpeed.values().forEach { speed ->
                     ChoiceButton(
-                        text = sound.title,
-                        selected = profile.sound == sound,
+                        text = speed.title,
+                        selected = profile.wakeSpeed == speed,
                         enabled = enabled,
-                        onClick = { onChange(profile.copy(sound = sound)) },
+                        onClick = { onChange(profile.copy(wakeSpeed = speed)) },
                         modifier = Modifier.weight(1f),
                     )
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("호흡 가이드", fontSize = 18.sp)
-                    Text(
-                        "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
-                        color = NupcarMuted,
-                        fontSize = 13.sp,
-                    )
-                }
-                Switch(
-                    checked = profile.breathingGuide,
-                    enabled = enabled,
-                    onCheckedChange = { onChange(profile.copy(breathingGuide = it)) },
-                )
+        }
+    }
+}
+
+@Composable
+private fun LightPanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(40.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // A soft glow whose strength follows the ambient light setting.
+        val glow = 0.12f + 0.88f * profile.ambientRatio.coerceIn(0f, 1f)
+        Box(
+            modifier = Modifier
+                .size(220.dp)
+                .background(
+                    Brush.radialGradient(
+                        listOf(Color(0xFFFFE2A8).copy(alpha = glow), Color(0xFFFFE2A8).copy(alpha = 0f))
+                    ),
+                    CircleShape,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("${(profile.ambientRatio * 100).roundToInt()}%", fontSize = 36.sp, fontWeight = FontWeight.Light)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            PanelTitle("실내 조명", "쉬는 동안의 앰비언트 조명 밝기예요. 끝날 때는 서서히 밝아져요.")
+            DetailSlider("밝기", "${(profile.ambientRatio * 100).roundToInt()}%", profile.ambientRatio, 0f..1f, enabled) {
+                onChange(profile.copy(ambientRatio = it))
             }
         }
-        Text(if (profile.quietWake) "종료 시 시트 속도" else "기상 시 시트 속도", fontSize = 18.sp)
+    }
+}
+
+@Composable
+private fun ClimatePanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
+    val temperature = profile.temperatureC.roundToInt()
+    val set = { value: Int -> onChange(profile.copy(temperatureC = value.coerceIn(18, 28).toFloat())) }
+    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        PanelTitle("실내 온도", "쉬는 동안 맞출 공조 온도예요. 끝나면 원래 온도로 돌아가요.")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = { set(temperature - 1) },
+                enabled = enabled && temperature > 18,
+                modifier = Modifier.size(72.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("−", fontSize = 30.sp) }
+            Text(
+                "$temperature°C",
+                fontSize = 64.sp,
+                fontWeight = FontWeight.Light,
+                color = NupcarMint,
+                modifier = Modifier.padding(horizontal = 40.dp),
+            )
+            OutlinedButton(
+                onClick = { set(temperature + 1) },
+                enabled = enabled && temperature < 28,
+                modifier = Modifier.size(72.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("+", fontSize = 30.sp) }
+        }
+        Slider(
+            value = profile.temperatureC,
+            onValueChange = { set(it.roundToInt()) },
+            valueRange = 18f..28f,
+            enabled = enabled,
+        )
+    }
+}
+
+@Composable
+private fun SoundPanel(
+    state: NupcarState,
+    enabled: Boolean,
+    onAlarmChanged: (Boolean) -> Unit,
+    onChange: (RestProfile) -> Unit,
+) {
+    val profile = state.profile
+    if (profile.quietWake) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            PanelTitle("사운드", "영상 시청 중에는 눕카 사운드를 끄고, 영상 앱의 소리를 그대로 들어요.")
+            Text(
+                "시청 시간이 끝나면 영상 소리를 방해하지 않도록 기상 사운드 대신 알림으로 알려 드리고, 조명을 밝힌 뒤 등받이를 세워요.",
+                fontSize = 16.sp,
+                color = NupcarMuted,
+                lineHeight = 23.sp,
+            )
+        }
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        PanelTitle("사운드", "쉬는 동안 들을 소리와 끝날 때의 알림을 정해요.")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            WakeSpeed.values().forEach { speed ->
+            RestSound.values().forEach { sound ->
                 ChoiceButton(
-                    text = speed.title,
-                    selected = profile.wakeSpeed == speed,
+                    text = sound.title,
+                    selected = profile.sound == sound,
                     enabled = enabled,
-                    onClick = { onChange(profile.copy(wakeSpeed = speed)) },
+                    onClick = { onChange(profile.copy(sound = sound)) },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
+        SettingSwitch(
+            title = "호흡 가이드",
+            detail = "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
+            checked = profile.breathingGuide,
+            enabled = enabled,
+            onChange = { onChange(profile.copy(breathingGuide = it)) },
+        )
+        SettingSwitch(
+            title = "기상 사운드",
+            detail = "기기의 알람 음량으로 재생돼요.",
+            checked = state.alarmEnabled,
+            enabled = enabled,
+            onChange = onAlarmChanged,
+        )
+    }
+}
+
+@Composable
+private fun SettingSwitch(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 18.sp)
+            Text(detail, color = NupcarMuted, fontSize = 13.sp)
+        }
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
     }
 }
 
@@ -1002,43 +1202,7 @@ private fun SeatPicture(seat: SeatView) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Canvas(modifier = Modifier.size(width = 240.dp, height = 150.dp)) {
-            val unit = size.height / 10f
-            val floorY = size.height - unit
-            val hingeX = size.width * 0.62f
-            val cushionTop = floorY - unit * 3.2f
-            drawLine(NupcarMuted.copy(alpha = 0.4f), Offset(0f, floorY), Offset(size.width, floorY), unit * 0.25f, StrokeCap.Round)
-            drawRoundRect(
-                color = NupcarMint.copy(alpha = 0.55f),
-                topLeft = Offset(hingeX - unit * 0.6f, cushionTop + unit * 1.1f),
-                size = Size(unit * 1.2f, floorY - cushionTop - unit * 1.1f),
-                cornerRadius = CornerRadius(unit * 0.3f),
-            )
-            drawRoundRect(
-                color = NupcarMint,
-                topLeft = Offset(hingeX - unit * 0.3f, cushionTop),
-                size = Size(size.width * 0.34f, unit * 1.2f),
-                cornerRadius = CornerRadius(unit * 0.6f),
-            )
-            // 0 recline leans the backrest 12° back from vertical, full recline lays it flat.
-            val degrees = -(12f + seat.recline.coerceIn(0f, 1f) * 78f)
-            val pivot = Offset(hingeX, cushionTop + unit * 0.6f)
-            rotate(degrees, pivot) {
-                val length = unit * 6f
-                drawRoundRect(
-                    color = NupcarMint,
-                    topLeft = Offset(pivot.x - unit * 0.6f, pivot.y - length),
-                    size = Size(unit * 1.2f, length),
-                    cornerRadius = CornerRadius(unit * 0.6f),
-                )
-                drawRoundRect(
-                    color = NupcarMint.copy(alpha = 0.8f),
-                    topLeft = Offset(pivot.x - unit * 0.7f, pivot.y - length - unit * 1.7f),
-                    size = Size(unit * 1.4f, unit * 1.4f),
-                    cornerRadius = CornerRadius(unit * 0.5f),
-                )
-            }
-        }
+        SeatDrawing(seat.recline, Modifier.size(width = 240.dp, height = 150.dp))
         Text(
             "등받이 눕힘 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)",
             fontSize = 16.sp,
@@ -1054,6 +1218,48 @@ private fun SeatPicture(seat: SeatView) {
             fontSize = 13.sp,
             color = NupcarMuted,
         )
+    }
+}
+
+/** Side view of the seat; [recline] is 0 upright to 1 lying flat over the whole range. */
+@Composable
+private fun SeatDrawing(recline: Float, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val unit = size.height / 10f
+        val floorY = size.height - unit
+        val hingeX = size.width * 0.62f
+        val cushionTop = floorY - unit * 3.2f
+        drawLine(NupcarMuted.copy(alpha = 0.4f), Offset(0f, floorY), Offset(size.width, floorY), unit * 0.25f, StrokeCap.Round)
+        drawRoundRect(
+            color = NupcarMint.copy(alpha = 0.55f),
+            topLeft = Offset(hingeX - unit * 0.6f, cushionTop + unit * 1.1f),
+            size = Size(unit * 1.2f, floorY - cushionTop - unit * 1.1f),
+            cornerRadius = CornerRadius(unit * 0.3f),
+        )
+        drawRoundRect(
+            color = NupcarMint,
+            topLeft = Offset(hingeX - unit * 0.3f, cushionTop),
+            size = Size(size.width * 0.34f, unit * 1.2f),
+            cornerRadius = CornerRadius(unit * 0.6f),
+        )
+        // 0 recline leans the backrest 12° back from vertical, full recline lays it flat.
+        val degrees = -(12f + recline.coerceIn(0f, 1f) * 78f)
+        val pivot = Offset(hingeX, cushionTop + unit * 0.6f)
+        rotate(degrees, pivot) {
+            val length = unit * 6f
+            drawRoundRect(
+                color = NupcarMint,
+                topLeft = Offset(pivot.x - unit * 0.6f, pivot.y - length),
+                size = Size(unit * 1.2f, length),
+                cornerRadius = CornerRadius(unit * 0.6f),
+            )
+            drawRoundRect(
+                color = NupcarMint.copy(alpha = 0.8f),
+                topLeft = Offset(pivot.x - unit * 0.7f, pivot.y - length - unit * 1.7f),
+                size = Size(unit * 1.4f, unit * 1.4f),
+                cornerRadius = CornerRadius(unit * 0.5f),
+            )
+        }
     }
 }
 
