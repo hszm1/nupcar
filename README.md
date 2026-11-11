@@ -71,7 +71,29 @@ adb forward tcp:8088 tcp:8088
 
 ## APK
 
-릴리스 APK는 [GitHub Releases](../../releases)에 올립니다.
+릴리스 APK: [`apk/ARC_눕카_release.apk`](apk/ARC_눕카_release.apk)
+
+에뮬레이터를 켠 상태에서 다음 명령으로 설치합니다. 디버그 빌드가 이미 설치되어 있으면 서명이 달라 설치가 거부되므로 먼저 지웁니다.
+
+```bash
+adb uninstall com.arc.nupcar
+adb install apk/ARC_눕카_release.apk
+```
+
+릴리스 빌드는 휴식 시간을 10·20·30·60분 중에서 고르며, 시연용 1분 선택지와 개발용 차량 점검 화면은 디버그 빌드에만 있습니다.
+
+릴리스 APK를 직접 빌드하려면 팀의 서명 키가 필요합니다. 키 파일과 비밀번호는 저장소에 올리지 않고, 각자 `local.properties`에 다음 항목을 적습니다. 항목이 없으면 서명되지 않은 APK가 만들어집니다.
+
+```properties
+nupcar.release.storeFile=<키 파일 경로>
+nupcar.release.storePassword=<비밀번호>
+nupcar.release.keyAlias=nupcar
+nupcar.release.keyPassword=<비밀번호>
+```
+
+```bash
+./gradlew :app:assembleRelease
+```
 
 ## 에뮬레이터 제한 사항
 
@@ -87,7 +109,11 @@ adb forward tcp:8088 tcp:8088
 
 - `moveSeatBackrestAngle`로 FORWARD와 BACKWARD를 보내면 요청은 정상 접수되지만, `getCurrentSeatBackrestAnglePosition` 값과 위치 변경 알림이 계속 0입니다.
 - 차량 설정의 시트 모드에서 **휴식**을 선택해도 값이 바뀌지 않고, Virtual Console에도 등받이 항목이 없습니다.
-- 공모전 운영사무국에 문의한 결과, 이 API의 에뮬레이터 지원은 안내받았지만 위치 값이 0으로 고정되는 현상의 해결 방법은 아직 없습니다. FORWARD는 시트가 바라보는 방향, 즉 등받이를 세우는 방향이라고 안내받았고, 앱도 이 방향으로 구현했습니다.
+- 공모전 운영사무국에 문의한 결과는 다음과 같습니다.
+  - 이 API의 에뮬레이터 지원은 안내받았지만, 위치 값이 0으로 고정되는 현상의 해결 방법은 없습니다.
+  - 등받이 동작은 **시뮬레이션 화면으로 대체해 시연하는 것을 인정**받았습니다.
+  - 공식 문서에 없는 기능은 기획서에 향후 계획으로 적도록 안내받았습니다.
+  - FORWARD는 시트가 바라보는 방향, 즉 등받이를 세우는 방향이라고 안내받았고, 앱도 이 방향으로 구현했습니다.
 
 그래서 시트 제어 코드는 실제 차량과 같은 방식으로 SDK를 호출하고, 화면의 등받이 그림만 시각화로 대체합니다. 시각화 중에는 "시각화 화면"이라는 문구와 실제 등받이 값을 함께 표시해, 실제 동작과 구분할 수 있게 했습니다.
 
