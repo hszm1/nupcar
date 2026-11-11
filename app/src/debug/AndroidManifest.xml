@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only. The vehicle inspector (long-press the title) explores every public
+  Vehicle SDK domain, so it needs the remaining public permissions. Release builds keep
+  only what a rest session uses, declared in src/main/AndroidManifest.xml.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="pleos.car.permission.CAR_CONNECT_VENDOR_CONTROL" />
+    <uses-permission android:name="pleos.car.permission.CAR_DOORS" />
+    <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
+    <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />
+    <uses-permission android:name="pleos.car.permission.CAR_INFO" />
+    <uses-permission android:name="pleos.car.permission.CAR_MILEAGE" />
+    <uses-permission android:name="pleos.car.permission.CAR_MIRRORS" />
+    <uses-permission android:name="pleos.car.permission.CAR_POWERTRAIN" />
+    <uses-permission android:name="pleos.car.permission.CAR_SAFETY" />
+    <uses-permission android:name="pleos.car.permission.CAR_SPEED" />
+    <uses-permission android:name="pleos.car.permission.CAR_TOLL" />
+    <uses-permission android:name="pleos.car.permission.CAR_TIRES" />
+    <uses-permission android:name="pleos.car.permission.CAR_WINDOWS" />
+
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_DOORS" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_DRIVE" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_ENERGY" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_INFO" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_MIRRORS" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_SAFETY" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_TOLL" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_WINDOWS" />
+    <uses-permission android:name="pleos.car.permission.READ_CAR_DISPLAY_UNITS" />
+    <uses-permission android:name="pleos.car.permission.READ_CAR_STEERING" />
+    <uses-permission android:name="pleos.car.permission.READ_ADAS_STATES" />
+    <uses-permission android:name="pleos.car.permission.READ_WINDSHIELD_WIPERS" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_WINDSHIELD_WIPERS" />
+
+</manifest>
