@@ -25,8 +25,8 @@ class GeneratedRestAudio : RestAudio {
             }
             RestSound.SOFT_NOISE -> play(AudioAttributes.USAGE_MEDIA, REST_FADE_IN_SECONDS) { noise(smoothing = 0.97f, gain = 0.5f) }
             RestSound.BREATHING -> play(AudioAttributes.USAGE_MEDIA, REST_FADE_IN_SECONDS) { index ->
-                val phase = sin(2.0 * PI * index / (SAMPLE_RATE * BREATH_SECONDS)).toFloat()
-                noise(smoothing = 0.97f, gain = 0.5f) * (0.25f + 0.75f * (phase + 1f) / 2f)
+                val level = BreathCycle.level(index * 1000L / SAMPLE_RATE)
+                noise(smoothing = 0.97f, gain = 0.5f) * (0.25f + 0.75f * level)
             }
         }
     }
@@ -134,7 +134,6 @@ class GeneratedRestAudio : RestAudio {
         const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         const val BUFFER_SAMPLES = 2_048
         const val LOOP_SAMPLES = SAMPLE_RATE * 600
-        const val BREATH_SECONDS = 10
         /** Divides the 600-second loop evenly, so the swell has no jump when the loop wraps. */
         const val SWELL_SECONDS = 15
         const val REST_FADE_IN_SECONDS = 3f

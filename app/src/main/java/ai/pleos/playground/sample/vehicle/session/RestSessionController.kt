@@ -28,7 +28,12 @@ enum class WakeStage(val title: String) {
 sealed interface RestState {
     data object Idle : RestState
     data class Preparing(val profile: RestProfile) : RestState
-    data class Resting(val profile: RestProfile, val remainingMillis: Long) : RestState
+    /** [soundStartedAtMillis] lets the screen keep the breathing guide in step with the sound. */
+    data class Resting(
+        val profile: RestProfile,
+        val remainingMillis: Long,
+        val soundStartedAtMillis: Long
+    ) : RestState
     data class Waking(val profile: RestProfile, val stage: WakeStage) : RestState
     data class RestoringSeat(val message: String) : RestState
     data class Finished(val warnings: List<String>) : RestState
@@ -215,8 +220,9 @@ class RestSessionController(
             val ambientBounds = optional("조명 범위 확인") { vehicle.ambientBounds() }
             applyRestEnvironment(profile, ambientBounds)
             audio.playRest(profile.sound)
+            val soundStartedAt = now()
 
-            rest(profile)
+            rest(profile, soundStartedAt)
             wake(profile, saved, ambientBounds)
             watchdog.cancel()
         }
@@ -322,12 +328,12 @@ class RestSessionController(
         }
     }
 
-    private suspend fun rest(profile: RestProfile) {
+    private suspend fun rest(profile: RestProfile, soundStartedAt: Long) {
         val endsAt = now() + profile.durationMinutes * 60_000L
         while (true) {
             val remaining = endsAt - now()
             if (remaining <= 0) return
-            _state.value = RestState.Resting(profile, remaining)
+            _state.value = RestState.Resting(profile, remaining, soundStartedAt)
             val woken = withTimeoutOrNull(min(remaining, timings.tickMillis)) { wakeSignal.await() }
             if (woken != null) return
         }

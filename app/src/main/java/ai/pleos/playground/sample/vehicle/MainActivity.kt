@@ -1,6 +1,7 @@
 package ai.pleos.playground.sample.vehicle
 
 import ai.pleos.playground.sample.vehicle.explorer.VehicleDomain
+import ai.pleos.playground.sample.vehicle.session.BreathCycle
 import ai.pleos.playground.sample.vehicle.session.NupcarMode
 import ai.pleos.playground.sample.vehicle.session.ProfileStore
 import ai.pleos.playground.sample.vehicle.session.RestProfile
@@ -30,11 +31,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -73,7 +69,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -872,14 +870,12 @@ private fun VehicleSessionPanel(
                 }
                 is RestState.Resting -> {
                     SessionHeading("편안하게 쉬어가요", session.profile.mode.title)
-                    Box(contentAlignment = Alignment.Center) {
-                        if (session.profile.sound == RestSound.BREATHING) BreathingGuide()
-                        Text(
-                            formatNupcarTime(session.remainingMillis),
-                            fontSize = 64.sp,
-                            fontWeight = FontWeight.Light,
-                            color = NupcarMint,
-                        )
+                    if (session.profile.sound == RestSound.BREATHING) {
+                        BreathingGuide(session.soundStartedAtMillis) {
+                            RestTimer(session.remainingMillis)
+                        }
+                    } else {
+                        RestTimer(session.remainingMillis)
                     }
                     OutlinedButton(
                         onClick = onWakeNow,
@@ -1026,20 +1022,46 @@ private fun EmergencyStopButton(onClick: () -> Unit) {
 }
 
 @Composable
-private fun BreathingGuide() {
-    val transition = rememberInfiniteTransition(label = "breathing")
-    val breath by transition.animateFloat(
-        initialValue = 0.6f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(5_000), RepeatMode.Reverse),
-        label = "breathing-scale",
+private fun RestTimer(remainingMillis: Long) {
+    Text(
+        formatNupcarTime(remainingMillis),
+        fontSize = 64.sp,
+        fontWeight = FontWeight.Light,
+        color = NupcarMint,
     )
-    Box(
-        Modifier
-            .size(280.dp)
-            .scale(breath)
-            .background(Color(0xFF19343F), CircleShape),
-    )
+}
+
+/**
+ * A circle that grows on the in-breath and shrinks on the out-breath, with the matching
+ * word. It reads the same [BreathCycle] as the breathing sound, counted from when the
+ * sound started, so the screen and the sound stay in step.
+ */
+@Composable
+private fun BreathingGuide(soundStartedAtMillis: Long, center: @Composable () -> Unit) {
+    var elapsed by remember { mutableLongStateOf(System.currentTimeMillis() - soundStartedAtMillis) }
+    LaunchedEffect(soundStartedAtMillis) {
+        while (true) {
+            withFrameMillis { elapsed = System.currentTimeMillis() - soundStartedAtMillis }
+        }
+    }
+    val inhaling = BreathCycle.isInhaling(elapsed)
+    Box(contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .size(280.dp)
+                .scale(0.7f + 0.3f * BreathCycle.level(elapsed))
+                .background(Color(0xFF19343F), CircleShape),
+        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                if (inhaling) "들이쉬세요" else "내쉬세요",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (inhaling) NupcarMint else NupcarMuted,
+            )
+            center()
+        }
+    }
 }
 
 @Composable
