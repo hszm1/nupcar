@@ -20,6 +20,7 @@ import kotlin.math.roundToInt
 
 enum class WakeStage(val title: String) {
     SOUND("기상 사운드"),
+    ALERT("시청 종료 알림"),
     LIGHT("조명 전환"),
     SEAT("시트 올리는 중"),
     RESTORE("차량 환경 복원")
@@ -90,7 +91,9 @@ class RestSessionController(
     private val audio: RestAudio,
     private val scope: CoroutineScope,
     private val now: () -> Long = System::currentTimeMillis,
-    private val timings: RestTimings = RestTimings()
+    private val timings: RestTimings = RestTimings(),
+    /** Tells the user a quiet session is ending while they are likely in another app. */
+    private val notifyWake: (RestProfile) -> Unit = {}
 ) {
     private val _state = MutableStateFlow<RestState>(RestState.Idle)
     val state: StateFlow<RestState> = _state.asStateFlow()
@@ -340,10 +343,16 @@ class RestSessionController(
     }
 
     private suspend fun wake(profile: RestProfile, saved: Snapshot, ambientBounds: IntRange?) {
-        _state.value = RestState.Waking(profile, WakeStage.SOUND)
         audio.stop()
-        if (profile.wakeSoundEnabled) audio.playWake()
-        delay(timings.wakeSoundMillis)
+        if (profile.quietWake) {
+            // The light ramp that follows gives time to read the notice before the seat moves.
+            _state.value = RestState.Waking(profile, WakeStage.ALERT)
+            runCatching { notifyWake(profile) }
+        } else {
+            _state.value = RestState.Waking(profile, WakeStage.SOUND)
+            if (profile.wakeSoundEnabled) audio.playWake()
+            delay(timings.wakeSoundMillis)
+        }
 
         _state.value = RestState.Waking(profile, WakeStage.LIGHT)
         rampLight(saved, ambientBounds)

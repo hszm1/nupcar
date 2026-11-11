@@ -254,6 +254,33 @@ class RestSessionControllerTest {
     }
 
     @Test
+    fun videoSessionEndsWithANoticeInsteadOfAWakeSound() = runBlocking<Unit> {
+        val notified = mutableListOf<NupcarMode>()
+        val videoController = RestSessionController(
+            { vehicle }, audio, scope, timings = timings, notifyWake = { notified += it.mode }
+        )
+        val before = vehicle.backrestPosition()
+        val video = RestProfile.default(NupcarMode.VIDEO).copy(durationMinutes = 1)
+
+        videoController.start(video)
+        withTimeout(5_000) { videoController.state.first { it is RestState.Resting } }
+        assertEquals(RestSound.NONE, audio.restSound)
+
+        videoController.wakeNow()
+        // The alert stage has no wait of its own, so a collector may only see the light stage
+        // that follows; the notice itself is what matters.
+        val waking = withTimeout(5_000) {
+            videoController.state.first { it is RestState.Waking } as RestState.Waking
+        }
+        assertTrue(waking.stage != WakeStage.SOUND)
+        withTimeout(8_000) { videoController.state.first { it is RestState.Finished } }
+
+        assertEquals(listOf(NupcarMode.VIDEO), notified)
+        assertFalse("video must not play the wake sound over the video", audio.wakePlayed)
+        assertTrue(kotlin.math.abs(vehicle.backrestPosition() - before) <= 2)
+    }
+
+    @Test
     fun breathingGuideWorksWithAnySound() = runBlocking<Unit> {
         controller.start(profile.copy(sound = RestSound.WHITE_NOISE, breathingGuide = true))
         val resting = awaitResting() as RestState.Resting

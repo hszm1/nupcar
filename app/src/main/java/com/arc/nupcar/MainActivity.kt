@@ -2,6 +2,8 @@ package com.arc.nupcar
 
 import com.arc.nupcar.explorer.VehicleDomain
 import com.arc.nupcar.session.BreathCycle
+import com.arc.nupcar.session.MAX_REST_MINUTES
+import com.arc.nupcar.session.MIN_REST_MINUTES
 import com.arc.nupcar.session.NupcarMode
 import com.arc.nupcar.session.ProfileStore
 import com.arc.nupcar.session.RestProfile
@@ -12,10 +14,17 @@ import com.arc.nupcar.session.SeatView
 import com.arc.nupcar.session.WakeSpeed
 import com.arc.nupcar.ui.screen.SampleApp
 import com.arc.nupcar.ui.theme.VehicleSampleAppTheme
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.app.Application
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
@@ -48,6 +57,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.filter
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -122,6 +138,20 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var showVehicleInspector by rememberSaveable { mutableStateOf(false) }
+            // The video mode's end notice needs this permission; the session starts either way.
+            val notificationPermission = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { nupcar.startSession() }
+            val startSession = {
+                val needsPermission = nupcar.state.profile.quietWake &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                if (needsPermission) {
+                    notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    nupcar.startSession()
+                }
+            }
             val state = nupcar.state
             val session = nupcar.session.collectAsStateWithLifecycle().value
             val seat = nupcar.seat.collectAsStateWithLifecycle().value
@@ -154,7 +184,7 @@ class MainActivity : ComponentActivity() {
                     onMinutesSelected = nupcar::selectMinutes,
                     onAlarmChanged = nupcar::setAlarmEnabled,
                     onProfileChanged = nupcar::updateProfile,
-                    onStart = nupcar::startSession,
+                    onStart = startSession,
                     onWakeNow = nupcar::wakeNow,
                     onEmergencyStop = nupcar::emergencyStop,
                     onRestoreSeat = nupcar::restoreSeat,
@@ -360,10 +390,6 @@ data class NupcarState(
             (1f - remainingMs.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
 }
 
-/** Shorter choice for development and demo recordings only. */
-private val NupcarMinuteChoices: List<Int> =
-    (if (BuildConfig.DEBUG) listOf(1) else emptyList()) + listOf(10, 20, 30, 60)
-
 class NupcarViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as NupcarApplication
     private val profiles = ProfileStore(application)
@@ -413,7 +439,7 @@ class NupcarViewModel(application: Application) : AndroidViewModel(application) 
         if (state.phase != NupcarPhase.READY) return
         val profile = state.profile.copy(
             durationMinutes = state.selectedMinutes,
-            wakeSoundEnabled = state.alarmEnabled,
+            wakeSoundEnabled = state.alarmEnabled && !state.profile.quietWake,
         )
         profiles.save(profile)
         controller.start(profile)
@@ -432,7 +458,7 @@ class NupcarViewModel(application: Application) : AndroidViewModel(application) 
     fun finishSession() = controller.reset()
 
     fun selectMinutes(minutes: Int) {
-        if (state.phase != NupcarPhase.READY || minutes !in NupcarMinuteChoices) return
+        if (state.phase != NupcarPhase.READY || minutes !in MIN_REST_MINUTES..MAX_REST_MINUTES) return
         val duration = minutes * 60_000L
         state = state.copy(
             selectedMinutes = minutes,
@@ -745,32 +771,46 @@ private fun ModeSettings(
             }
             Text(state.mode.description, color = NupcarMuted, fontSize = 16.sp)
             Spacer(Modifier.height(2.dp))
-            Text("휴식 시간", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NupcarMinuteChoices.forEach { minutes ->
-                    ChoiceButton(
-                        text = minutes.toString() + "분",
-                        selected = state.selectedMinutes == minutes,
-                        enabled = canEdit,
-                        onClick = { onMinutesSelected(minutes) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("기상 사운드", fontSize = 18.sp)
-                    Text("기기의 알람 음량으로 재생돼요.", color = NupcarMuted, fontSize = 13.sp)
-                }
-                Switch(
-                    checked = state.alarmEnabled,
-                    enabled = canEdit,
-                    onCheckedChange = onAlarmChanged,
+                Text(
+                    if (state.profile.quietWake) "시청 시간" else "휴식 시간",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
                 )
+                Text(formatMinutes(state.selectedMinutes), color = NupcarMint, fontSize = 18.sp)
+            }
+            TimeWheel(
+                totalMinutes = state.selectedMinutes,
+                enabled = canEdit,
+                onChange = onMinutesSelected,
+            )
+            if (state.profile.quietWake) {
+                Text(
+                    "시청 시간이 끝나면 영상 소리를 방해하지 않도록 알림으로 알려 드리고, 조명을 밝힌 뒤 등받이를 세워요.",
+                    color = NupcarMuted,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("기상 사운드", fontSize = 18.sp)
+                        Text("기기의 알람 음량으로 재생돼요.", color = NupcarMuted, fontSize = 13.sp)
+                    }
+                    Switch(
+                        checked = state.alarmEnabled,
+                        enabled = canEdit,
+                        onCheckedChange = onAlarmChanged,
+                    )
+                }
             }
             RestDetailSettings(state.profile, canEdit, onProfileChanged)
         }
@@ -793,38 +833,41 @@ private fun RestDetailSettings(
         DetailSlider("실내 온도", "${profile.temperatureC.roundToInt()}°C", profile.temperatureC, 18f..28f, enabled) {
             onChange(profile.copy(temperatureC = it.roundToInt().toFloat()))
         }
-        Text("사운드", fontSize = 18.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RestSound.values().forEach { sound ->
-                ChoiceButton(
-                    text = sound.title,
-                    selected = profile.sound == sound,
+        // Video plays its own sound in another app, so Nupcar adds none and shows no guide.
+        if (!profile.quietWake) {
+            Text("사운드", fontSize = 18.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RestSound.values().forEach { sound ->
+                    ChoiceButton(
+                        text = sound.title,
+                        selected = profile.sound == sound,
+                        enabled = enabled,
+                        onClick = { onChange(profile.copy(sound = sound)) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("호흡 가이드", fontSize = 18.sp)
+                    Text(
+                        "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
+                        color = NupcarMuted,
+                        fontSize = 13.sp,
+                    )
+                }
+                Switch(
+                    checked = profile.breathingGuide,
                     enabled = enabled,
-                    onClick = { onChange(profile.copy(sound = sound)) },
-                    modifier = Modifier.weight(1f),
+                    onCheckedChange = { onChange(profile.copy(breathingGuide = it)) },
                 )
             }
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("호흡 가이드", fontSize = 18.sp)
-                Text(
-                    "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
-                    color = NupcarMuted,
-                    fontSize = 13.sp,
-                )
-            }
-            Switch(
-                checked = profile.breathingGuide,
-                enabled = enabled,
-                onCheckedChange = { onChange(profile.copy(breathingGuide = it)) },
-            )
-        }
-        Text("기상 시 시트 속도", fontSize = 18.sp)
+        Text(if (profile.quietWake) "종료 시 시트 속도" else "기상 시 시트 속도", fontSize = 18.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             WakeSpeed.values().forEach { speed ->
                 ChoiceButton(
@@ -888,7 +931,11 @@ private fun VehicleSessionPanel(
                     EmergencyStopButton(onEmergencyStop)
                 }
                 is RestState.Resting -> {
-                    SessionHeading("편안하게 쉬어가요", session.profile.mode.title)
+                    val video = session.profile.quietWake
+                    SessionHeading(
+                        if (video) "편한 자세로 영상을 즐기세요" else "편안하게 쉬어가요",
+                        if (video) "다른 앱으로 가도 시간이 끝나면 알려 드려요." else session.profile.mode.title,
+                    )
                     if (session.profile.breathingGuide) {
                         BreathingGuide(session.soundStartedAtMillis) {
                             RestTimer(session.remainingMillis)
@@ -901,12 +948,16 @@ private fun VehicleSessionPanel(
                         modifier = Modifier.fillMaxWidth().height(66.dp),
                         shape = RoundedCornerShape(18.dp),
                     ) {
-                        Text("지금 일어나기", fontSize = 20.sp)
+                        Text(if (video) "시청 끝내기" else "지금 일어나기", fontSize = 20.sp)
                     }
+                    if (video) VideoAppShortcuts()
                     EmergencyStopButton(onEmergencyStop)
                 }
                 is RestState.Waking -> {
-                    SessionHeading("휴식을 마무리하고 있어요", session.stage.title)
+                    SessionHeading(
+                        if (session.profile.quietWake) "시청을 마무리하고 있어요" else "휴식을 마무리하고 있어요",
+                        session.stage.title,
+                    )
                     EmergencyStopButton(onEmergencyStop)
                 }
                 is RestState.RestoringSeat -> {
@@ -1142,7 +1193,7 @@ private fun SessionPanel(
             Text(heading, fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
             Text(
                 if (state.isPreview) "10초 뒤 알림을 확인해 보세요." else
-                    state.mode.title + " · " + state.selectedMinutes.toString() + "분",
+                    state.mode.title + " · " + formatMinutes(state.selectedMinutes),
                 color = NupcarMuted,
                 fontSize = 17.sp,
             )
@@ -1209,7 +1260,167 @@ private fun SessionPanel(
 
 private fun formatNupcarTime(remainingMs: Long): String {
     val seconds = (remainingMs.coerceAtLeast(0L) + 999L) / 1000L
-    return String.format(Locale.US, "%02d:%02d", seconds / 60L, seconds % 60L)
+    val hours = seconds / 3600L
+    return if (hours > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, seconds % 3600L / 60L, seconds % 60L)
+    } else {
+        String.format(Locale.US, "%02d:%02d", seconds / 60L, seconds % 60L)
+    }
+}
+
+/** "1시간 30분", "45분", "2시간". */
+private fun formatMinutes(totalMinutes: Int): String {
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return when {
+        hours == 0 -> "${minutes}분"
+        minutes == 0 -> "${hours}시간"
+        else -> "${hours}시간 ${minutes}분"
+    }
+}
+
+private val WheelItemHeight = 48.dp
+private const val WheelVisibleItems = 3
+
+/**
+ * Hours and minutes picked on two scrolling wheels, like a phone timer. Any length from
+ * [MIN_REST_MINUTES] to [MAX_REST_MINUTES] in one-minute steps; 0 hours 0 minutes becomes 1 minute.
+ */
+@Composable
+private fun TimeWheel(totalMinutes: Int, enabled: Boolean, onChange: (Int) -> Unit) {
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    val emit = { h: Int, m: Int ->
+        onChange((h * 60 + m).coerceIn(MIN_REST_MINUTES, MAX_REST_MINUTES))
+    }
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Band behind the selected row.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(WheelItemHeight)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF19343F)),
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            WheelColumn(count = MAX_REST_MINUTES / 60 + 1, selected = hours, enabled = enabled) { emit(it, minutes) }
+            Text("시간", fontSize = 18.sp, color = NupcarMuted)
+            Spacer(Modifier.size(20.dp))
+            WheelColumn(count = 60, selected = minutes, enabled = enabled) { emit(hours, it) }
+            Text("분", fontSize = 18.sp, color = NupcarMuted)
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun WheelColumn(count: Int, selected: Int, enabled: Boolean, onSelected: (Int) -> Unit) {
+    // A blank row above and below lets the first and last values reach the middle row, so the
+    // value in the middle is simply the first visible index once the list has snapped.
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = selected)
+    val currentOnSelected by rememberUpdatedState(onSelected)
+    val currentSelected by rememberUpdatedState(selected)
+
+    // Follow outside changes, such as switching to a mode with a different saved time.
+    LaunchedEffect(selected) {
+        if (!listState.isScrollInProgress && listState.firstVisibleItemIndex != selected) {
+            listState.scrollToItem(selected)
+        }
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .filter { !it }
+            .collect {
+                val centered = listState.firstVisibleItemIndex.coerceIn(0, count - 1)
+                if (centered != currentSelected) currentOnSelected(centered)
+            }
+    }
+    val centered by remember {
+        derivedStateOf {
+            val offsetRows = if (listState.firstVisibleItemScrollOffset > 0) {
+                (listState.firstVisibleItemScrollOffset.toFloat() /
+                    (listState.layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 1)).roundToInt()
+            } else 0
+            listState.firstVisibleItemIndex + offsetRows
+        }
+    }
+    LazyColumn(
+        state = listState,
+        flingBehavior = rememberSnapFlingBehavior(lazyListState = listState),
+        userScrollEnabled = enabled,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.size(width = 72.dp, height = WheelItemHeight * WheelVisibleItems),
+    ) {
+        item { Spacer(Modifier.height(WheelItemHeight)) }
+        items(count) { value ->
+            Box(Modifier.height(WheelItemHeight).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    value.toString().padStart(2, '0'),
+                    fontSize = if (value == centered) 30.sp else 22.sp,
+                    fontWeight = if (value == centered) FontWeight.SemiBold else FontWeight.Normal,
+                    color = when {
+                        !enabled -> NupcarMuted
+                        value == centered -> NupcarMint
+                        else -> NupcarMuted.copy(alpha = 0.6f)
+                    },
+                )
+            }
+        }
+        item { Spacer(Modifier.height(WheelItemHeight)) }
+    }
+}
+
+/**
+ * Shortcuts to the installed apps that can play video, so the user can start watching in
+ * one tap. The session keeps running in the background while another app is open.
+ */
+@Composable
+private fun VideoAppShortcuts() {
+    val context = LocalContext.current
+    val apps = remember {
+        val probe = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse("content://media/external/video/media/1"), "video/*")
+        context.packageManager.queryIntentActivities(probe, 0)
+            .map { it.activityInfo.packageName }
+            .distinct()
+            .filter { it != context.packageName }
+            .mapNotNull { pkg ->
+                val launch = context.packageManager.getLaunchIntentForPackage(pkg) ?: return@mapNotNull null
+                val label = runCatching {
+                    context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+                }.getOrDefault(pkg)
+                label to launch
+            }
+            .take(3)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Text("영상 앱 열기", fontSize = 16.sp, color = NupcarMuted)
+        if (apps.isEmpty()) {
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                },
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(16.dp),
+            ) { Text("홈 화면에서 앱 고르기", fontSize = 18.sp) }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                apps.forEach { (label, launch) ->
+                    OutlinedButton(
+                        onClick = { runCatching { context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } },
+                        modifier = Modifier.weight(1f).height(56.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) { Text(label, fontSize = 18.sp, maxLines = 1) }
+                }
+            }
+        }
+    }
 }
 
 @Preview(showBackground = true, widthDp = 1280, heightDp = 720)
