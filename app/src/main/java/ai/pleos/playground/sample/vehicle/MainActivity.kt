@@ -974,7 +974,7 @@ private fun SeatPicture(seat: SeatView) {
             }
         }
         Text(
-            "등받이 눕힘 ${(seat.recline * 100).roundToInt()}%",
+            "등받이 눕힘 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)",
             fontSize = 16.sp,
             color = NupcarMint,
         )

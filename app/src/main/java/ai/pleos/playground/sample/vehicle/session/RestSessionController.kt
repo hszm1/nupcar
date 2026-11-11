@@ -53,7 +53,16 @@ data class SeatView(
     val recline: Float = 0f,
     val simulated: Boolean = true,
     val position: Int? = null
-)
+) {
+    /**
+     * The same recline on the scale of the recline setting, where 1 is the deepest recline
+     * the app allows. Above 1 only if the seat was already reclined further before a session.
+     */
+    val settingRatio: Float get() = recline / MAX_RECLINE_SHARE
+}
+
+/** Never asks for the full mechanical range, which could reach whatever is behind the seat. */
+const val MAX_RECLINE_SHARE = 0.7f
 
 data class RestTimings(
     val wakeSoundMillis: Long = 15_000,
@@ -408,8 +417,6 @@ class RestSessionController(
         bounds.first + ((bounds.last - bounds.first) * ratio.coerceIn(0f, 1f)).roundToInt()
 
     private companion object {
-        /** Never asks for the full mechanical range, which could reach whatever is behind the seat. */
-        const val MAX_RECLINE_SHARE = 0.7f
         const val WAKE_LIGHT_RATIO = 0.7f
         const val GUARD_EVERY_MILLIS = 500L
     }

@@ -77,6 +77,8 @@ class RestSessionControllerTest {
         val reclined = controller.seat.value
         assertTrue(reclined.simulated)
         assertEquals(profile.reclineRatio * 0.7f, reclined.recline, 0.01f)
+        // The label matches the recline setting the user chose, not the mechanical share.
+        assertEquals(profile.reclineRatio, reclined.settingRatio, 0.01f)
         assertEquals(0, reclined.position)
 
         controller.wakeNow()
