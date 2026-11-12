@@ -39,11 +39,16 @@ sealed interface RestState {
     data class RestoringSeat(val message: String) : RestState
     data class Finished(val warnings: List<String>) : RestState
 
-    /** Ended early. The seat stays where it stopped until the user chooses to restore it. */
+    /**
+     * Ended early. The seat stays where it stopped until the user restores it. Leaving without
+     * restoring is offered only after [restoreFailed], so a reclined seat is never taken for the
+     * upright position by the next session.
+     */
     data class Interrupted(
         val reason: String,
         val canRestoreSeat: Boolean,
-        val warnings: List<String>
+        val warnings: List<String>,
+        val restoreFailed: Boolean = false
     ) : RestState
 
     data class Rejected(val reason: String) : RestState
@@ -177,9 +182,13 @@ class RestSessionController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: NotParkedException) {
-                _state.value = RestState.Interrupted("주차 상태에서만 시트를 복원할 수 있습니다.", true, warnings.toList())
+                _state.value = RestState.Interrupted(
+                    "주차 상태에서만 시트를 복원할 수 있습니다.", true, warnings.toList(), restoreFailed = true
+                )
             } catch (e: Exception) {
-                _state.value = RestState.Interrupted(e.message ?: "시트를 복원하지 못했습니다", true, warnings.toList())
+                _state.value = RestState.Interrupted(
+                    e.message ?: "시트를 복원하지 못했습니다", true, warnings.toList(), restoreFailed = true
+                )
             }
         }
     }

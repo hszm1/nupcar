@@ -736,7 +736,8 @@ private fun NupcarScreen(
                 Box(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .padding(bottom = 260.dp),
+                        // Idle leaves room for the setting panel; a session keeps the timer in the middle.
+                        .padding(bottom = if (idle && !previewing) 260.dp else 60.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     when {
@@ -750,8 +751,12 @@ private fun NupcarScreen(
                             modifier = Modifier.width(560.dp),
                         )
                         idle -> IdleScene(state)
-                        else -> SessionScene(session, seat)
+                        else -> SessionScene(session)
                     }
+                }
+
+                if (!idle && sessionShowsSeat(session)) {
+                    SeatCorner(seat, Modifier.align(Alignment.BottomStart))
                 }
 
                 // Bottom: the chosen tab's controls rise above the floating bar.
@@ -982,66 +987,81 @@ private fun IdleScene(state: NupcarState) {
     }
 }
 
+/** Whether the session screen shows the seat: whenever the seat may be away from where it started. */
+private fun sessionShowsSeat(session: RestState): Boolean =
+    session is RestState.Preparing || session is RestState.Resting || session is RestState.Waking ||
+        session is RestState.RestoringSeat || session is RestState.Interrupted
+
+/** The running session in the middle of the scene: what is happening and, while resting, a large timer. */
 @Composable
-private fun SessionScene(session: RestState, seat: SeatView) {
-    val showSeat = session is RestState.Preparing || session is RestState.Resting ||
-        session is RestState.Waking || session is RestState.RestoringSeat || session is RestState.Interrupted
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(64.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun SessionScene(session: RestState) {
+    Column(
+        modifier = Modifier.width(760.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        if (showSeat) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                SeatDrawing(seat.recline, Modifier.size(width = 340.dp, height = 215.dp))
-                Text("등받이 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)", fontSize = 15.sp, color = NupcarMint)
-                Text(
-                    if (seat.simulated) "시각화 화면 · 에뮬레이터에서는 등받이 값이 바뀌지 않아요" else "실제 시트 위치",
-                    fontSize = 13.sp,
-                    color = Color.White.copy(alpha = 0.6f),
+        when (session) {
+            RestState.Idle -> Unit
+            is RestState.Preparing -> SessionHeading("휴식 환경을 준비하고 있어요", "시트가 천천히 움직여요.")
+            is RestState.Resting -> {
+                val video = session.profile.quietWake
+                SessionHeading(
+                    if (video) "편한 자세로 영상을 즐기세요" else "편안하게 쉬어가요",
+                    if (video) "다른 앱으로 가도 시간이 끝나면 알려 드려요." else session.profile.mode.title,
                 )
-            }
-        }
-        Column(
-            modifier = Modifier.width(520.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            when (session) {
-                RestState.Idle -> Unit
-                is RestState.Preparing -> SessionHeading("휴식 환경을 준비하고 있어요", "시트가 천천히 움직여요.")
-                is RestState.Resting -> {
-                    val video = session.profile.quietWake
-                    SessionHeading(
-                        if (video) "편한 자세로 영상을 즐기세요" else "편안하게 쉬어가요",
-                        if (video) "다른 앱으로 가도 시간이 끝나면 알려 드려요." else session.profile.mode.title,
+                if (session.profile.breathingGuide) {
+                    BreathingGuide(session.soundStartedAtMillis) { RestTimer(session.remainingMillis) }
+                } else {
+                    Text(
+                        formatNupcarTime(session.remainingMillis),
+                        fontSize = 150.sp,
+                        fontWeight = FontWeight.ExtraLight,
+                        color = NupcarMint,
                     )
-                    if (session.profile.breathingGuide) {
-                        BreathingGuide(session.soundStartedAtMillis) { RestTimer(session.remainingMillis) }
-                    } else {
-                        Text(
-                            formatNupcarTime(session.remainingMillis),
-                            fontSize = 96.sp,
-                            fontWeight = FontWeight.ExtraLight,
-                            color = NupcarMint,
-                        )
-                    }
                 }
-                is RestState.Waking -> SessionHeading(
-                    if (session.profile.quietWake) "시청을 마무리하고 있어요" else "휴식을 마무리하고 있어요",
-                    session.stage.title,
-                )
-                is RestState.RestoringSeat -> SessionHeading("시트를 되돌리고 있어요", session.message)
-                is RestState.Finished -> {
-                    SessionHeading("휴식이 끝났어요", "시트와 차량 환경을 휴식 전 상태로 되돌렸어요.")
-                    SessionWarnings(session.warnings)
-                }
-                is RestState.Interrupted -> {
-                    SessionHeading("휴식이 중단되었어요", session.reason)
-                    SessionWarnings(session.warnings)
-                }
-                is RestState.Rejected -> SessionHeading("시작하지 않았어요", session.reason)
             }
+            is RestState.Waking -> SessionHeading(
+                if (session.profile.quietWake) "시청을 마무리하고 있어요" else "휴식을 마무리하고 있어요",
+                session.stage.title,
+            )
+            is RestState.RestoringSeat -> SessionHeading("시트를 되돌리고 있어요", session.message)
+            is RestState.Finished -> {
+                SessionHeading("휴식이 끝났어요", "시트와 차량 환경을 휴식 전 상태로 되돌렸어요.")
+                SessionWarnings(session.warnings)
+            }
+            is RestState.Interrupted -> {
+                SessionHeading("휴식이 중단되었어요", session.reason)
+                if (session.canRestoreSeat && !session.restoreFailed) {
+                    Text(
+                        "시트를 휴식 전 위치로 되돌린 뒤 처음 화면으로 돌아가요.",
+                        fontSize = 17.sp,
+                        color = NupcarMint,
+                    )
+                }
+                SessionWarnings(session.warnings)
+            }
+            is RestState.Rejected -> SessionHeading("시작하지 않았어요", session.reason)
         }
+    }
+}
+
+/** A small view of the seat for the corner of the session screen, so the timer keeps the middle. */
+@Composable
+private fun SeatCorner(seat: SeatView, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .glass(RoundedCornerShape(24.dp))
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SeatDrawing(seat.recline, Modifier.size(width = 200.dp, height = 126.dp))
+        Text("등받이 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)", fontSize = 14.sp, color = NupcarMint)
+        Text(
+            if (seat.simulated) "시각화 화면 · 에뮬레이터 값 고정" else "실제 시트 위치",
+            fontSize = 12.sp,
+            color = Color.White.copy(alpha = 0.6f),
+        )
     }
 }
 
@@ -1107,13 +1127,21 @@ private fun SessionBar(
             ) { Text("즉시 중단", fontSize = 19.sp, fontWeight = FontWeight.Bold) }
         }
         if (session is RestState.Interrupted && session.canRestoreSeat) {
-            Button(onClick = onRestoreSeat, shape = RoundedCornerShape(50), modifier = pill.width(240.dp)) {
-                Text("시트 되돌리기", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Button(onClick = onRestoreSeat, shape = RoundedCornerShape(50), modifier = pill.width(260.dp)) {
+                Text(if (session.restoreFailed) "다시 시도" else "시트 되돌리기", fontSize = 19.sp, fontWeight = FontWeight.Bold)
             }
         }
-        if (session is RestState.Finished || session is RestState.Interrupted || session is RestState.Rejected) {
-            OutlinedButton(onClick = onDone, shape = RoundedCornerShape(50), modifier = pill.width(260.dp)) {
-                Text("확인하고 돌아가기", fontSize = 19.sp)
+        // A reclined seat must be restored before going back; leaving it as it is is offered
+        // only once restoring has failed, so the screen can never trap the user.
+        val interruptedCanLeave = session is RestState.Interrupted &&
+            (!session.canRestoreSeat || session.restoreFailed)
+        if (session is RestState.Finished || session is RestState.Rejected || interruptedCanLeave) {
+            OutlinedButton(onClick = onDone, shape = RoundedCornerShape(50), modifier = pill.width(300.dp)) {
+                Text(
+                    if (session is RestState.Interrupted && session.canRestoreSeat) "시트는 그대로 두고 돌아가기"
+                    else "확인하고 돌아가기",
+                    fontSize = 19.sp,
+                )
             }
         }
     }
@@ -1474,7 +1502,7 @@ private fun EmergencyStopButton(onClick: () -> Unit) {
 private fun RestTimer(remainingMillis: Long) {
     Text(
         formatNupcarTime(remainingMillis),
-        fontSize = 64.sp,
+        fontSize = 96.sp,
         fontWeight = FontWeight.Light,
         color = NupcarMint,
     )
@@ -1497,14 +1525,14 @@ private fun BreathingGuide(soundStartedAtMillis: Long, center: @Composable () ->
     Box(contentAlignment = Alignment.Center) {
         Box(
             Modifier
-                .size(280.dp)
+                .size(440.dp)
                 .scale(0.7f + 0.3f * BreathCycle.level(elapsed))
                 .background(Color(0xFF19343F), CircleShape),
         )
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 if (inhaling) "들이쉬세요" else "내쉬세요",
-                fontSize = 24.sp,
+                fontSize = 30.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = if (inhaling) NupcarMint else NupcarMuted,
             )
