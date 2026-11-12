@@ -162,6 +162,8 @@ class RestSessionControllerTest {
         }
         assertEquals(SeatDirection.STOP, slow.currentDirection)
         assertTrue(interrupted.canRestoreSeat)
+        // Restoring comes first; leaving with the seat reclined is not offered yet.
+        assertFalse(interrupted.restoreFailed)
         val stoppedAt = slow.backrestPosition()
         delay(30)
         assertEquals(stoppedAt, slow.backrestPosition())
@@ -183,7 +185,10 @@ class RestSessionControllerTest {
         delay(50)
 
         assertTrue(vehicle.moveLog.drop(moves).all { it == SeatDirection.STOP })
-        assertTrue(controller.state.value is RestState.Interrupted)
+        val after = controller.state.value
+        assertTrue(after is RestState.Interrupted)
+        // After a failed restore the user may leave the seat as it is.
+        assertTrue((after as RestState.Interrupted).restoreFailed)
     }
 
     @Test
