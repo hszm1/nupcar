@@ -99,6 +99,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import com.arc.nupcar.ui.theme.NupcarTypography
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -314,7 +318,7 @@ private fun NupcarVehicleInspector(
                     Text(
                         report.ifBlank { "Vehicle Service 응답을 기다리고 있습니다." },
                         modifier = Modifier.height(420.dp).verticalScroll(rememberScrollState()),
-                        fontSize = 14.sp,
+                        fontSize = 17.sp,
                     )
                 }
             },
@@ -333,7 +337,7 @@ private fun NupcarVehicleInspector(
             title = { Text("차량 변경·복원 시험") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Pleos 에뮬레이터용입니다. 원래 값을 읽은 후 변경하고, 재조회로 복원을 확인합니다.", fontSize = 13.sp)
+                    Text("Pleos 에뮬레이터용입니다. 원래 값을 읽은 후 변경하고, 재조회로 복원을 확인합니다.", fontSize = 16.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = controls::testSeat,
@@ -353,7 +357,7 @@ private fun NupcarVehicleInspector(
                         Text(
                             controlState.report.ifBlank { "시험할 기능을 선택하세요. 온도 원래 값을 읽지 못하면 온도 변경은 건너뜁니다." },
                             modifier = Modifier.height(290.dp).verticalScroll(rememberScrollState()),
-                            fontSize = 13.sp,
+                            fontSize = 16.sp,
                         )
                     }
                 }
@@ -629,17 +633,22 @@ private val NupcarMuted = Color(0xFFA6BAC2)
 
 @Composable
 private fun NupcarTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = NupcarMint,
-            onPrimary = NupcarBackground,
-            background = NupcarBackground,
-            onBackground = Color(0xFFEAF5F5),
-            surface = NupcarPanel,
-            onSurface = Color(0xFFEAF5F5),
-        ),
-        content = content,
-    )
+    // One soft, rounded-looking face everywhere, and every sp a little larger for the car screen.
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalDensity provides Density(density.density, density.fontScale * 1.12f)) {
+        MaterialTheme(
+            colorScheme = darkColorScheme(
+                primary = NupcarMint,
+                onPrimary = NupcarBackground,
+                background = NupcarBackground,
+                onBackground = Color(0xFFEAF5F5),
+                surface = NupcarPanel,
+                onSurface = Color(0xFFEAF5F5),
+            ),
+            typography = NupcarTypography,
+            content = content,
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -720,7 +729,7 @@ private fun NupcarScreen(
                     sceneHint(session, canEdit),
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 18.dp),
                     color = Color.White.copy(alpha = 0.78f),
-                    fontSize = 15.sp,
+                    fontSize = 17.sp,
                 )
 
                 // Top right: start, or what the session is doing.
@@ -935,7 +944,7 @@ private fun ModeMenu(selected: NupcarMode, onSelected: (NupcarMode) -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(mode.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = if (chosen) NupcarMint else Color.White)
-                Text(mode.description, fontSize = 14.sp, color = NupcarMuted)
+                Text(mode.description, fontSize = 17.sp, color = NupcarMuted)
             }
         }
     }
@@ -951,7 +960,7 @@ private fun StartChip(onStart: () -> Unit, onPreview: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         TextButton(onClick = onPreview, shape = RoundedCornerShape(50)) {
-            Text("알림 10초 체험", fontSize = 15.sp, color = NupcarMuted)
+            Text("알림 10초 체험", fontSize = 17.sp, color = NupcarMuted)
         }
         Button(
             onClick = onStart,
@@ -1056,10 +1065,10 @@ private fun SeatCorner(seat: SeatView, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         SeatDrawing(seat.recline, Modifier.size(width = 200.dp, height = 126.dp))
-        Text("등받이 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)", fontSize = 14.sp, color = NupcarMint)
+        Text("등받이 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)", fontSize = 17.sp, color = NupcarMint)
         Text(
             if (seat.simulated) "시각화 화면 · 에뮬레이터 값 고정" else "실제 시트 위치",
-            fontSize = 12.sp,
+            fontSize = 17.sp,
             color = Color.White.copy(alpha = 0.6f),
         )
     }
@@ -1087,8 +1096,8 @@ private fun SettingBar(selected: SettingTab?, state: NupcarState, onSelect: (Set
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 TabIcon(item, if (chosen) NupcarMint else Color.White, Modifier.size(28.dp))
-                Text(item.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (chosen) NupcarMint else Color.White)
-                Text(tabValue(item, state), fontSize = 12.sp, maxLines = 1, color = NupcarMuted)
+                Text(item.title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (chosen) NupcarMint else Color.White)
+                Text(tabValue(item, state), fontSize = 17.sp, maxLines = 1, color = NupcarMuted)
             }
         }
     }
@@ -1235,7 +1244,7 @@ private fun tabValue(tab: SettingTab, state: NupcarState): String {
 private fun PanelTitle(title: String, detail: String) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-        Text(detail, fontSize = 15.sp, color = NupcarMuted, lineHeight = 21.sp)
+        Text(detail, fontSize = 17.sp, color = NupcarMuted, lineHeight = 21.sp)
     }
 }
 
@@ -1253,7 +1262,30 @@ private fun TimePanel(state: NupcarState, enabled: Boolean, onMinutesSelected: (
             )
             Text(formatMinutes(state.selectedMinutes), fontSize = 40.sp, fontWeight = FontWeight.Light, color = NupcarMint)
         }
-        TimeWheel(totalMinutes = state.selectedMinutes, enabled = enabled, onChange = onMinutesSelected)
+        val current = state.selectedMinutes
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onMinutesSelected((current - 10).coerceAtLeast(MIN_REST_MINUTES)) },
+                enabled = enabled && current > MIN_REST_MINUTES,
+                shape = RoundedCornerShape(18.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                modifier = Modifier.width(104.dp).height(72.dp),
+            ) { Text("−10분", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
+            Box(Modifier.weight(1f)) {
+                TimeWheel(totalMinutes = current, enabled = enabled, onChange = onMinutesSelected)
+            }
+            OutlinedButton(
+                onClick = { onMinutesSelected((current + 10).coerceAtMost(MAX_REST_MINUTES)) },
+                enabled = enabled && current < MAX_REST_MINUTES,
+                shape = RoundedCornerShape(18.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                modifier = Modifier.width(104.dp).height(72.dp),
+            ) { Text("+10분", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
+        }
     }
 }
 
@@ -1398,7 +1430,7 @@ private fun SettingSwitch(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(title, fontSize = 18.sp)
-            Text(detail, color = NupcarMuted, fontSize = 13.sp)
+            Text(detail, color = NupcarMuted, fontSize = 16.sp)
         }
         Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
     }
@@ -1472,7 +1504,7 @@ private fun SessionHeading(title: String, detail: String) {
 
 @Composable
 private fun SessionWarnings(warnings: List<String>) {
-    warnings.forEach { Text(it, color = Color(0xFFFFC8AE), fontSize = 14.sp, lineHeight = 21.sp) }
+    warnings.forEach { Text(it, color = Color(0xFFFFC8AE), fontSize = 17.sp, lineHeight = 21.sp) }
 }
 
 @Composable
@@ -1620,7 +1652,7 @@ private fun SessionPanel(
                 )
             }
             state.alarmError?.let {
-                Text(it, color = Color(0xFFFFC8AE), fontSize = 14.sp, lineHeight = 21.sp)
+                Text(it, color = Color(0xFFFFC8AE), fontSize = 17.sp, lineHeight = 21.sp)
             }
             val primaryAction = when (state.phase) {
                 NupcarPhase.READY -> onStart
@@ -1658,7 +1690,7 @@ private fun SessionPanel(
                 NupcarPhase.FINISHED -> Text(
                     "준비가 되면 다음 휴식을 설정할 수 있어요.",
                     color = NupcarMuted,
-                    fontSize = 14.sp,
+                    fontSize = 17.sp,
                 )
             }
         }
