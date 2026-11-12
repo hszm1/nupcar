@@ -2,6 +2,26 @@ package com.arc.nupcar
 
 import com.arc.nupcar.explorer.VehicleDomain
 import com.arc.nupcar.session.BreathCycle
+import com.arc.nupcar.session.MAX_RECLINE_SHARE
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+import androidx.compose.ui.graphics.Brush
 import com.arc.nupcar.session.MAX_REST_MINUTES
 import com.arc.nupcar.session.MIN_REST_MINUTES
 import com.arc.nupcar.session.NupcarMode
@@ -643,231 +663,581 @@ private fun NupcarScreen(
     onFinish: () -> Unit = {},
     onOpenVehicleInspector: () -> Unit = {},
 ) {
+    var tab by rememberSaveable { mutableStateOf<SettingTab?>(SettingTab.TIME) }
+    var modeMenuOpen by rememberSaveable { mutableStateOf(false) }
+    val idle = session is RestState.Idle
+    val previewing = state.phase != NupcarPhase.READY
+    val canEdit = idle && !previewing
+    val sessionProfile = when (session) {
+        is RestState.Preparing -> session.profile
+        is RestState.Resting -> session.profile
+        is RestState.Waking -> session.profile
+        else -> null
+    }
+    val sceneMode = sessionProfile?.mode ?: state.mode
+    val sceneLight = when (session) {
+        // The cabin brightens while waking, as the real ambient light does.
+        is RestState.Waking -> WAKE_SCENE_LIGHT
+        else -> (sessionProfile ?: state.profile).ambientRatio
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = NupcarBackground) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
-            val wide = maxWidth >= 850.dp
-            Column(
+        Box(modifier = Modifier.fillMaxSize()) {
+            SceneBackground(mode = sceneMode, light = sceneLight)
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(if (wide) 32.dp else 20.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
+                    .safeDrawingPadding()
+                    .padding(28.dp),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("NUPCAR", color = NupcarMint, fontSize = 14.sp, letterSpacing = 3.sp)
-                    Text(
-                        "눕카",
-                        fontSize = 36.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = if (BuildConfig.DEBUG && state.phase == NupcarPhase.READY && session is RestState.Idle) {
-                            Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClickLabel = "차량 기능 점검 열기",
-                                onLongClick = onOpenVehicleInspector,
-                            )
-                        } else Modifier,
+                // Top left: the app and the current mode, which opens the mode list.
+                Column(
+                    modifier = Modifier.align(Alignment.TopStart),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    ModeChip(
+                        mode = state.mode,
+                        enabled = canEdit,
+                        open = modeMenuOpen,
+                        onClick = { modeMenuOpen = !modeMenuOpen },
+                        onLongClick = {
+                            if (BuildConfig.DEBUG && canEdit) onOpenVehicleInspector()
+                        },
                     )
-                    Text("쉬는 시간도, 내 취향대로.", color = NupcarMuted, fontSize = 18.sp)
-                    if (BuildConfig.SIMULATED_VEHICLE) {
-                        Text("시뮬레이션 모드: 실제 차량을 제어하지 않아요.", color = NupcarMint, fontSize = 15.sp)
+                    AnimatedVisibility(
+                        visible = modeMenuOpen && canEdit,
+                        enter = fadeIn(tween(200)) + slideInVertically(tween(240)) { -it / 6 },
+                        exit = fadeOut(tween(150)),
+                    ) {
+                        ModeMenu(selected = state.mode) {
+                            onModeSelected(it)
+                            modeMenuOpen = false
+                        }
                     }
                 }
 
-                val rightPanel: @Composable (Modifier) -> Unit = { panelModifier ->
-                    if (session is RestState.Idle) {
-                        SessionPanel(
+                Text(
+                    sceneHint(session, canEdit),
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 18.dp),
+                    color = Color.White.copy(alpha = 0.78f),
+                    fontSize = 15.sp,
+                )
+
+                // Top right: start, or what the session is doing.
+                Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                    if (canEdit) {
+                        StartChip(onStart = onStart, onPreview = onPreview)
+                    } else if (!idle) {
+                        GlassChip { Text(sessionBadge(session), fontSize = 16.sp, color = NupcarMint) }
+                    }
+                }
+
+                // The scene: the mode and the seat, or the running session.
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = 260.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        previewing -> SessionPanel(
                             state = state,
                             onStart = onStart,
                             onPreview = onPreview,
                             onPause = onPause,
                             onResume = onResume,
                             onFinish = onFinish,
-                            modifier = panelModifier,
+                            modifier = Modifier.width(560.dp),
                         )
-                    } else {
-                        VehicleSessionPanel(
-                            session = session,
-                            seat = seat,
-                            onWakeNow = onWakeNow,
-                            onEmergencyStop = onEmergencyStop,
-                            onRestoreSeat = onRestoreSeat,
-                            onDone = onSessionDone,
-                            modifier = panelModifier,
-                        )
+                        idle -> IdleScene(state)
+                        else -> SessionScene(session, seat)
                     }
                 }
 
-                if (wide) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(24.dp),
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        ModeSettings(
-                            state = state,
-                            editable = session is RestState.Idle,
-                            onModeSelected = onModeSelected,
-                            onMinutesSelected = onMinutesSelected,
-                            onAlarmChanged = onAlarmChanged,
-                            onProfileChanged = onProfileChanged,
-                            modifier = Modifier.weight(1.1f),
-                        )
-                        rightPanel(Modifier.weight(1f))
-                    }
-                } else {
-                    ModeSettings(
-                        state = state,
-                        editable = session is RestState.Idle,
-                        onModeSelected = onModeSelected,
-                        onMinutesSelected = onMinutesSelected,
-                        onAlarmChanged = onAlarmChanged,
-                        onProfileChanged = onProfileChanged,
-                    )
-                    rightPanel(Modifier)
-                }
-
-                Text(
-                    "기어가 P일 때만 시작돼요. 시작 전에 시트 뒤 공간을 확인해 주세요. 언제든 즉시 중단할 수 있어요.",
-                    color = NupcarMuted,
-                    fontSize = 14.sp,
-                    lineHeight = 21.sp,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ModeSettings(
-    state: NupcarState,
-    editable: Boolean,
-    onModeSelected: (NupcarMode) -> Unit,
-    onMinutesSelected: (Int) -> Unit,
-    onAlarmChanged: (Boolean) -> Unit,
-    onProfileChanged: (RestProfile) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val canEdit = editable && state.phase == NupcarPhase.READY
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = NupcarPanel),
-    ) {
-        Column(
-            modifier = Modifier.padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            Text("어떻게 쉬고 싶으세요?", fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                NupcarMode.values().forEach { mode ->
-                    ChoiceButton(
-                        text = mode.title,
-                        selected = state.mode == mode,
-                        enabled = canEdit,
-                        onClick = { onModeSelected(mode) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-            Text(state.mode.description, color = NupcarMuted, fontSize = 16.sp)
-            Spacer(Modifier.height(2.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    if (state.profile.quietWake) "시청 시간" else "휴식 시간",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(formatMinutes(state.selectedMinutes), color = NupcarMint, fontSize = 18.sp)
-            }
-            TimeWheel(
-                totalMinutes = state.selectedMinutes,
-                enabled = canEdit,
-                onChange = onMinutesSelected,
-            )
-            if (state.profile.quietWake) {
-                Text(
-                    "시청 시간이 끝나면 영상 소리를 방해하지 않도록 알림으로 알려 드리고, 조명을 밝힌 뒤 등받이를 세워요.",
-                    color = NupcarMuted,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                )
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                // Bottom: the chosen tab's controls rise above the floating bar.
+                Column(
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("기상 사운드", fontSize = 18.sp)
-                        Text("기기의 알람 음량으로 재생돼요.", color = NupcarMuted, fontSize = 13.sp)
+                    if (idle && !previewing) {
+                        AnimatedContent(
+                            targetState = tab,
+                            transitionSpec = {
+                                (slideInVertically(tween(320)) { it / 4 } + fadeIn(tween(320))) togetherWith
+                                    fadeOut(tween(140))
+                            },
+                            label = "setting-panel",
+                        ) { current ->
+                            if (current != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(980.dp)
+                                        .glass(RoundedCornerShape(28.dp))
+                                        .padding(horizontal = 36.dp, vertical = 28.dp),
+                                ) {
+                                    when (current) {
+                                        SettingTab.TIME -> TimePanel(state, canEdit, onMinutesSelected)
+                                        SettingTab.SEAT -> SeatPanel(state.profile, canEdit, onProfileChanged)
+                                        SettingTab.LIGHT -> LightPanel(state.profile, canEdit, onProfileChanged)
+                                        SettingTab.CLIMATE -> ClimatePanel(state.profile, canEdit, onProfileChanged)
+                                        SettingTab.SOUND -> SoundPanel(state, canEdit, onAlarmChanged, onProfileChanged)
+                                    }
+                                }
+                            } else {
+                                Spacer(Modifier.height(0.dp))
+                            }
+                        }
+                        SettingBar(selected = tab, state = state) { tab = if (tab == it) null else it }
+                    } else if (!idle) {
+                        if (session is RestState.Resting && session.profile.quietWake) {
+                            Box(
+                                modifier = Modifier
+                                    .width(620.dp)
+                                    .glass(RoundedCornerShape(28.dp))
+                                    .padding(24.dp),
+                            ) { VideoAppShortcuts() }
+                        }
+                        SessionBar(session, onWakeNow, onEmergencyStop, onRestoreSeat, onSessionDone)
                     }
-                    Switch(
-                        checked = state.alarmEnabled,
-                        enabled = canEdit,
-                        onCheckedChange = onAlarmChanged,
-                    )
                 }
             }
-            RestDetailSettings(state.profile, canEdit, onProfileChanged)
+        }
+    }
+}
+
+/** How bright the scene gets while waking, matching the light the wake-up ramps to. */
+private const val WAKE_SCENE_LIGHT = 0.7f
+
+private fun sceneHint(session: RestState, canEdit: Boolean): String = when {
+    canEdit -> "기어가 P일 때만 시작돼요 · 아래에서 항목을 고르면 바로 위에서 조정해요"
+    session is RestState.Idle -> ""
+    session is RestState.Finished || session is RestState.Rejected || session is RestState.Interrupted -> ""
+    else -> "기어가 P에서 바뀌면 시트가 바로 멈춰요"
+}
+
+private fun sessionBadge(session: RestState): String = when (session) {
+    is RestState.Preparing -> "준비 중"
+    is RestState.Resting -> if (session.profile.quietWake) "시청 중" else "휴식 중"
+    is RestState.Waking -> "마무리 중"
+    is RestState.RestoringSeat -> "시트 복원 중"
+    is RestState.Finished -> "완료"
+    is RestState.Interrupted -> "중단됨"
+    is RestState.Rejected -> "시작 안 함"
+    RestState.Idle -> ""
+}
+
+/** Translucent panel over the scene, with a hairline edge. */
+private fun Modifier.glass(shape: Shape): Modifier = this
+    .clip(shape)
+    .background(Color(0xFF07131B).copy(alpha = 0.62f))
+    .border(1.dp, Color.White.copy(alpha = 0.14f), shape)
+
+@Composable
+private fun GlassChip(content: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier
+            .glass(RoundedCornerShape(50))
+            .padding(horizontal = 22.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) { content() }
+}
+
+/**
+ * Full-screen backdrop for the scene: a sky per mode (night for a nap, dawn for meditation,
+ * a dim theatre for video) and a warm glow from above that follows the cabin light.
+ */
+@Composable
+private fun SceneBackground(mode: NupcarMode, light: Float) {
+    val colors = when (mode) {
+        NupcarMode.NAP -> listOf(Color(0xFF050A19), Color(0xFF0F1D3F), Color(0xFF26386A))
+        NupcarMode.MEDITATION -> listOf(Color(0xFF071820), Color(0xFF1C4048), Color(0xFFB28A6E))
+        NupcarMode.VIDEO -> listOf(Color(0xFF030307), Color(0xFF110C22), Color(0xFF3A2470))
+    }
+    val top by animateColorAsState(colors[0], tween(900), label = "sky-top")
+    val middle by animateColorAsState(colors[1], tween(900), label = "sky-middle")
+    val horizon by animateColorAsState(colors[2], tween(900), label = "sky-horizon")
+    val glow by animateFloatAsState(light.coerceIn(0f, 1f), tween(900), label = "cabin-light")
+    val starAlpha by animateFloatAsState(if (mode == NupcarMode.MEDITATION) 0.15f else 0.7f, tween(900), label = "stars")
+    val stars = remember {
+        val random = kotlin.random.Random(7)
+        List(90) { Triple(random.nextFloat(), random.nextFloat() * 0.6f, 0.6f + random.nextFloat() * 1.6f) }
+    }
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        drawRect(Brush.verticalGradient(listOf(top, middle, horizon)))
+        drawRect(
+            Brush.radialGradient(
+                listOf(horizon.copy(alpha = 0.55f), Color.Transparent),
+                center = Offset(size.width / 2f, size.height * 1.08f),
+                radius = size.width * 0.65f,
+            )
+        )
+        stars.forEach { (x, y, r) ->
+            drawCircle(Color.White.copy(alpha = starAlpha * (0.35f + r / 4f)), r, Offset(x * size.width, y * size.height))
+        }
+        drawRect(
+            Brush.radialGradient(
+                listOf(Color(0xFFFFE2A8).copy(alpha = 0.04f + 0.32f * glow), Color.Transparent),
+                center = Offset(size.width / 2f, 0f),
+                radius = size.height * 0.95f,
+            )
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ModeChip(
+    mode: NupcarMode,
+    enabled: Boolean,
+    open: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .glass(RoundedCornerShape(50))
+            .combinedClickable(enabled = enabled, onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 22.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("눕카", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.size(width = 1.dp, height = 20.dp).background(Color.White.copy(alpha = 0.25f)))
+        Text(mode.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        if (enabled) Text(if (open) "⌃" else "⌄", fontSize = 18.sp, color = NupcarMuted)
+    }
+}
+
+@Composable
+private fun ModeMenu(selected: NupcarMode, onSelected: (NupcarMode) -> Unit) {
+    Column(
+        modifier = Modifier
+            .width(360.dp)
+            .glass(RoundedCornerShape(22.dp))
+            .padding(8.dp),
+    ) {
+        NupcarMode.values().forEach { mode ->
+            val chosen = mode == selected
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (chosen) NupcarMint.copy(alpha = 0.16f) else Color.Transparent)
+                    .clickable { onSelected(mode) }
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(mode.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = if (chosen) NupcarMint else Color.White)
+                Text(mode.description, fontSize = 14.sp, color = NupcarMuted)
+            }
         }
     }
 }
 
 @Composable
-private fun RestDetailSettings(
-    profile: RestProfile,
-    enabled: Boolean,
-    onChange: (RestProfile) -> Unit,
+private fun StartChip(onStart: () -> Unit, onPreview: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .glass(RoundedCornerShape(50))
+            .padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        TextButton(onClick = onPreview, shape = RoundedCornerShape(50)) {
+            Text("알림 10초 체험", fontSize = 15.sp, color = NupcarMuted)
+        }
+        Button(
+            onClick = onStart,
+            shape = RoundedCornerShape(50),
+            modifier = Modifier.height(52.dp),
+            contentPadding = PaddingValues(horizontal = 30.dp),
+        ) {
+            Text("쉬기 시작", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun IdleScene(state: NupcarState) {
+    val profile = state.profile
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(state.mode.title, fontSize = 52.sp, fontWeight = FontWeight.Light)
+        Text(state.mode.description, fontSize = 17.sp, color = Color.White.copy(alpha = 0.72f))
+        SeatDrawing(
+            recline = profile.reclineRatio.coerceIn(0f, 1f) * MAX_RECLINE_SHARE,
+            modifier = Modifier.padding(top = 12.dp).size(width = 380.dp, height = 240.dp),
+        )
+        Text(
+            listOf(
+                formatMinutes(state.selectedMinutes),
+                "등받이 ${(profile.reclineRatio * 100).roundToInt()}%",
+                "조명 ${(profile.ambientRatio * 100).roundToInt()}%",
+                "${profile.temperatureC.roundToInt()}°C",
+            ).joinToString("  ·  "),
+            fontSize = 16.sp,
+            color = Color.White.copy(alpha = 0.7f),
+        )
+    }
+}
+
+@Composable
+private fun SessionScene(session: RestState, seat: SeatView) {
+    val showSeat = session is RestState.Preparing || session is RestState.Resting ||
+        session is RestState.Waking || session is RestState.RestoringSeat || session is RestState.Interrupted
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(64.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (showSeat) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SeatDrawing(seat.recline, Modifier.size(width = 340.dp, height = 215.dp))
+                Text("등받이 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)", fontSize = 15.sp, color = NupcarMint)
+                Text(
+                    if (seat.simulated) "시각화 화면 · 에뮬레이터에서는 등받이 값이 바뀌지 않아요" else "실제 시트 위치",
+                    fontSize = 13.sp,
+                    color = Color.White.copy(alpha = 0.6f),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.width(520.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            when (session) {
+                RestState.Idle -> Unit
+                is RestState.Preparing -> SessionHeading("휴식 환경을 준비하고 있어요", "시트가 천천히 움직여요.")
+                is RestState.Resting -> {
+                    val video = session.profile.quietWake
+                    SessionHeading(
+                        if (video) "편한 자세로 영상을 즐기세요" else "편안하게 쉬어가요",
+                        if (video) "다른 앱으로 가도 시간이 끝나면 알려 드려요." else session.profile.mode.title,
+                    )
+                    if (session.profile.breathingGuide) {
+                        BreathingGuide(session.soundStartedAtMillis) { RestTimer(session.remainingMillis) }
+                    } else {
+                        Text(
+                            formatNupcarTime(session.remainingMillis),
+                            fontSize = 96.sp,
+                            fontWeight = FontWeight.ExtraLight,
+                            color = NupcarMint,
+                        )
+                    }
+                }
+                is RestState.Waking -> SessionHeading(
+                    if (session.profile.quietWake) "시청을 마무리하고 있어요" else "휴식을 마무리하고 있어요",
+                    session.stage.title,
+                )
+                is RestState.RestoringSeat -> SessionHeading("시트를 되돌리고 있어요", session.message)
+                is RestState.Finished -> {
+                    SessionHeading("휴식이 끝났어요", "시트와 차량 환경을 휴식 전 상태로 되돌렸어요.")
+                    SessionWarnings(session.warnings)
+                }
+                is RestState.Interrupted -> {
+                    SessionHeading("휴식이 중단되었어요", session.reason)
+                    SessionWarnings(session.warnings)
+                }
+                is RestState.Rejected -> SessionHeading("시작하지 않았어요", session.reason)
+            }
+        }
+    }
+}
+
+/** The floating bar of setting tabs; tapping the open tab again closes its panel. */
+@Composable
+private fun SettingBar(selected: SettingTab?, state: NupcarState, onSelect: (SettingTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .glass(RoundedCornerShape(50))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SettingTab.values().forEach { item ->
+            val chosen = item == selected
+            Column(
+                modifier = Modifier
+                    .width(124.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (chosen) NupcarMint.copy(alpha = 0.18f) else Color.Transparent)
+                    .clickable { onSelect(item) }
+                    .padding(vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TabIcon(item, if (chosen) NupcarMint else Color.White, Modifier.size(28.dp))
+                Text(item.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (chosen) NupcarMint else Color.White)
+                Text(tabValue(item, state), fontSize = 12.sp, maxLines = 1, color = NupcarMuted)
+            }
+        }
+    }
+}
+
+/** Session actions in the same floating bar shape as the setting tabs. */
+@Composable
+private fun SessionBar(
+    session: RestState,
+    onWakeNow: () -> Unit,
+    onEmergencyStop: () -> Unit,
+    onRestoreSeat: () -> Unit,
+    onDone: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        DetailSlider("등받이 눕힘", "${(profile.reclineRatio * 100).roundToInt()}%", profile.reclineRatio, 0f..1f, enabled) {
+    Row(
+        modifier = Modifier
+            .glass(RoundedCornerShape(50))
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val pill = Modifier.height(60.dp)
+        val moving = session is RestState.Preparing || session is RestState.Resting ||
+            session is RestState.Waking || session is RestState.RestoringSeat
+        if (session is RestState.Resting) {
+            OutlinedButton(onClick = onWakeNow, shape = RoundedCornerShape(50), modifier = pill.width(240.dp)) {
+                Text(if (session.profile.quietWake) "시청 끝내기" else "지금 일어나기", fontSize = 19.sp)
+            }
+        }
+        if (moving) {
+            Button(
+                onClick = onEmergencyStop,
+                shape = RoundedCornerShape(50),
+                modifier = pill.width(240.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD9483F), contentColor = Color.White),
+            ) { Text("즉시 중단", fontSize = 19.sp, fontWeight = FontWeight.Bold) }
+        }
+        if (session is RestState.Interrupted && session.canRestoreSeat) {
+            Button(onClick = onRestoreSeat, shape = RoundedCornerShape(50), modifier = pill.width(240.dp)) {
+                Text("시트 되돌리기", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        if (session is RestState.Finished || session is RestState.Interrupted || session is RestState.Rejected) {
+            OutlinedButton(onClick = onDone, shape = RoundedCornerShape(50), modifier = pill.width(260.dp)) {
+                Text("확인하고 돌아가기", fontSize = 19.sp)
+            }
+        }
+    }
+}
+
+/** Simple line icons drawn in code, so the bar needs no icon library or image files. */
+@Composable
+private fun TabIcon(tab: SettingTab, color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val stroke = Stroke(width = w * 0.08f, cap = StrokeCap.Round)
+        when (tab) {
+            SettingTab.TIME -> {
+                drawCircle(color, w * 0.4f, center, style = stroke)
+                drawLine(color, center, Offset(center.x, w * 0.24f), stroke.width, StrokeCap.Round)
+                drawLine(color, center, Offset(w * 0.68f, center.y), stroke.width, StrokeCap.Round)
+            }
+            SettingTab.SEAT -> {
+                drawLine(color, Offset(w * 0.3f, w * 0.68f), Offset(w * 0.86f, w * 0.68f), stroke.width, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.3f, w * 0.68f), Offset(w * 0.16f, w * 0.18f), stroke.width, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.5f, w * 0.68f), Offset(w * 0.5f, w * 0.9f), stroke.width, StrokeCap.Round)
+            }
+            SettingTab.LIGHT -> {
+                drawCircle(color, w * 0.18f, center, style = stroke)
+                repeat(8) { i ->
+                    val a = i * PI.toFloat() / 4f
+                    val inner = w * 0.3f
+                    val outer = w * 0.44f
+                    drawLine(
+                        color,
+                        Offset(center.x + inner * cos(a), center.y + inner * sin(a)),
+                        Offset(center.x + outer * cos(a), center.y + outer * sin(a)),
+                        stroke.width,
+                        StrokeCap.Round,
+                    )
+                }
+            }
+            SettingTab.CLIMATE -> {
+                drawRoundRect(
+                    color,
+                    topLeft = Offset(w * 0.4f, w * 0.08f),
+                    size = Size(w * 0.2f, w * 0.56f),
+                    cornerRadius = CornerRadius(w * 0.1f),
+                    style = stroke,
+                )
+                drawCircle(color, w * 0.17f, Offset(center.x, w * 0.76f))
+            }
+            SettingTab.SOUND -> {
+                val speaker = Path().apply {
+                    moveTo(w * 0.1f, w * 0.38f)
+                    lineTo(w * 0.28f, w * 0.38f)
+                    lineTo(w * 0.48f, w * 0.18f)
+                    lineTo(w * 0.48f, w * 0.82f)
+                    lineTo(w * 0.28f, w * 0.62f)
+                    lineTo(w * 0.1f, w * 0.62f)
+                    close()
+                }
+                drawPath(speaker, color, style = stroke)
+                drawArc(color, -45f, 90f, false, Offset(w * 0.42f, w * 0.3f), Size(w * 0.3f, w * 0.4f), style = stroke)
+                drawArc(color, -50f, 100f, false, Offset(w * 0.4f, w * 0.14f), Size(w * 0.5f, w * 0.72f), style = stroke)
+            }
+        }
+    }
+}
+
+/** The setting tabs on the floating bar; the chosen one opens its panel above the bar. */
+private enum class SettingTab(val title: String) {
+    TIME("시간"),
+    SEAT("시트"),
+    LIGHT("조명"),
+    CLIMATE("온도"),
+    SOUND("사운드"),
+}
+
+private fun tabValue(tab: SettingTab, state: NupcarState): String {
+    val profile = state.profile
+    return when (tab) {
+        SettingTab.TIME -> formatMinutes(state.selectedMinutes)
+        SettingTab.SEAT -> "${(profile.reclineRatio * 100).roundToInt()}%"
+        SettingTab.LIGHT -> "${(profile.ambientRatio * 100).roundToInt()}%"
+        SettingTab.CLIMATE -> "${profile.temperatureC.roundToInt()}°C"
+        SettingTab.SOUND -> when {
+            profile.quietWake -> "알림"
+            profile.breathingGuide -> profile.sound.title + " · 호흡"
+            else -> profile.sound.title
+        }
+    }
+}
+
+@Composable
+private fun PanelTitle(title: String, detail: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Text(detail, fontSize = 15.sp, color = NupcarMuted, lineHeight = 21.sp)
+    }
+}
+
+@Composable
+private fun TimePanel(state: NupcarState, enabled: Boolean, onMinutesSelected: (Int) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            PanelTitle(
+                if (state.profile.quietWake) "시청 시간" else "휴식 시간",
+                "휠을 위아래로 돌려 1분 단위로 맞춰요.",
+            )
+            Text(formatMinutes(state.selectedMinutes), fontSize = 40.sp, fontWeight = FontWeight.Light, color = NupcarMint)
+        }
+        TimeWheel(totalMinutes = state.selectedMinutes, enabled = enabled, onChange = onMinutesSelected)
+    }
+}
+
+@Composable
+private fun SeatPanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
+    // The seat in the scene above follows this setting, so the panel holds only the controls.
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        PanelTitle("등받이", "안전 범위(최대 70%) 안에서 얼마나 눕힐지 정해요. 위의 그림이 바로 따라 움직여요.")
+        DetailSlider("눕힘", "${(profile.reclineRatio * 100).roundToInt()}%", profile.reclineRatio, 0f..1f, enabled) {
             onChange(profile.copy(reclineRatio = it))
         }
-        DetailSlider("조명 밝기", "${(profile.ambientRatio * 100).roundToInt()}%", profile.ambientRatio, 0f..1f, enabled) {
-            onChange(profile.copy(ambientRatio = it))
-        }
-        DetailSlider("실내 온도", "${profile.temperatureC.roundToInt()}°C", profile.temperatureC, 18f..28f, enabled) {
-            onChange(profile.copy(temperatureC = it.roundToInt().toFloat()))
-        }
-        // Video plays its own sound in another app, so Nupcar adds none and shows no guide.
-        if (!profile.quietWake) {
-            Text("사운드", fontSize = 18.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                RestSound.values().forEach { sound ->
-                    ChoiceButton(
-                        text = sound.title,
-                        selected = profile.sound == sound,
-                        enabled = enabled,
-                        onClick = { onChange(profile.copy(sound = sound)) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("호흡 가이드", fontSize = 18.sp)
-                    Text(
-                        "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
-                        color = NupcarMuted,
-                        fontSize = 13.sp,
-                    )
-                }
-                Switch(
-                    checked = profile.breathingGuide,
-                    enabled = enabled,
-                    onCheckedChange = { onChange(profile.copy(breathingGuide = it)) },
-                )
-            }
-        }
-        Text(if (profile.quietWake) "종료 시 시트 속도" else "기상 시 시트 속도", fontSize = 18.sp)
+        Text(if (profile.quietWake) "종료 시 시트 속도" else "기상 시 시트 속도", fontSize = 17.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             WakeSpeed.values().forEach { speed ->
                 ChoiceButton(
@@ -879,6 +1249,130 @@ private fun RestDetailSettings(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun LightPanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
+    // The glow at the top of the scene follows this setting.
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        PanelTitle("실내 조명", "쉬는 동안의 앰비언트 조명 밝기예요. 화면 위쪽 빛이 함께 바뀌고, 끝날 때는 서서히 밝아져요.")
+        DetailSlider("밝기", "${(profile.ambientRatio * 100).roundToInt()}%", profile.ambientRatio, 0f..1f, enabled) {
+            onChange(profile.copy(ambientRatio = it))
+        }
+    }
+}
+
+@Composable
+private fun ClimatePanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
+    val temperature = profile.temperatureC.roundToInt()
+    val set = { value: Int -> onChange(profile.copy(temperatureC = value.coerceIn(18, 28).toFloat())) }
+    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        PanelTitle("실내 온도", "쉬는 동안 맞출 공조 온도예요. 끝나면 원래 온도로 돌아가요.")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = { set(temperature - 1) },
+                enabled = enabled && temperature > 18,
+                modifier = Modifier.size(72.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("−", fontSize = 30.sp) }
+            Text(
+                "$temperature°C",
+                fontSize = 64.sp,
+                fontWeight = FontWeight.Light,
+                color = NupcarMint,
+                modifier = Modifier.padding(horizontal = 40.dp),
+            )
+            OutlinedButton(
+                onClick = { set(temperature + 1) },
+                enabled = enabled && temperature < 28,
+                modifier = Modifier.size(72.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("+", fontSize = 30.sp) }
+        }
+        Slider(
+            value = profile.temperatureC,
+            onValueChange = { set(it.roundToInt()) },
+            valueRange = 18f..28f,
+            enabled = enabled,
+        )
+    }
+}
+
+@Composable
+private fun SoundPanel(
+    state: NupcarState,
+    enabled: Boolean,
+    onAlarmChanged: (Boolean) -> Unit,
+    onChange: (RestProfile) -> Unit,
+) {
+    val profile = state.profile
+    if (profile.quietWake) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            PanelTitle("사운드", "영상 시청 중에는 눕카 사운드를 끄고, 영상 앱의 소리를 그대로 들어요.")
+            Text(
+                "시청 시간이 끝나면 영상 소리를 방해하지 않도록 기상 사운드 대신 알림으로 알려 드리고, 조명을 밝힌 뒤 등받이를 세워요.",
+                fontSize = 16.sp,
+                color = NupcarMuted,
+                lineHeight = 23.sp,
+            )
+        }
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        PanelTitle("사운드", "쉬는 동안 들을 소리와 끝날 때의 알림을 정해요.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RestSound.values().forEach { sound ->
+                ChoiceButton(
+                    text = sound.title,
+                    selected = profile.sound == sound,
+                    enabled = enabled,
+                    onClick = { onChange(profile.copy(sound = sound)) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        SettingSwitch(
+            title = "호흡 가이드",
+            detail = "화면의 원을 따라 5초 들이쉬고 5초 내쉬어요. 사운드도 호흡에 맞춰 커졌다 작아져요.",
+            checked = profile.breathingGuide,
+            enabled = enabled,
+            onChange = { onChange(profile.copy(breathingGuide = it)) },
+        )
+        SettingSwitch(
+            title = "기상 사운드",
+            detail = "기기의 알람 음량으로 재생돼요.",
+            checked = state.alarmEnabled,
+            enabled = enabled,
+            onChange = onAlarmChanged,
+        )
+    }
+}
+
+@Composable
+private fun SettingSwitch(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 18.sp)
+            Text(detail, color = NupcarMuted, fontSize = 13.sp)
+        }
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
     }
 }
 
@@ -900,160 +1394,45 @@ private fun DetailSlider(
     }
 }
 
+/** Side view of the seat; [recline] is 0 upright to 1 lying flat over the whole range. */
 @Composable
-private fun VehicleSessionPanel(
-    session: RestState,
-    seat: SeatView,
-    onWakeNow: () -> Unit,
-    onEmergencyStop: () -> Unit,
-    onRestoreSeat: () -> Unit,
-    onDone: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = NupcarPanel),
-    ) {
-        Column(
-            modifier = Modifier.padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            val showSeat = session is RestState.Preparing || session is RestState.Resting ||
-                session is RestState.Waking || session is RestState.RestoringSeat ||
-                session is RestState.Interrupted
-            if (showSeat) SeatPicture(seat)
-            when (session) {
-                RestState.Idle -> Unit
-                is RestState.Preparing -> {
-                    SessionHeading("휴식 환경을 준비하고 있어요", "시트가 천천히 움직여요.")
-                    EmergencyStopButton(onEmergencyStop)
-                }
-                is RestState.Resting -> {
-                    val video = session.profile.quietWake
-                    SessionHeading(
-                        if (video) "편한 자세로 영상을 즐기세요" else "편안하게 쉬어가요",
-                        if (video) "다른 앱으로 가도 시간이 끝나면 알려 드려요." else session.profile.mode.title,
-                    )
-                    if (session.profile.breathingGuide) {
-                        BreathingGuide(session.soundStartedAtMillis) {
-                            RestTimer(session.remainingMillis)
-                        }
-                    } else {
-                        RestTimer(session.remainingMillis)
-                    }
-                    OutlinedButton(
-                        onClick = onWakeNow,
-                        modifier = Modifier.fillMaxWidth().height(66.dp),
-                        shape = RoundedCornerShape(18.dp),
-                    ) {
-                        Text(if (video) "시청 끝내기" else "지금 일어나기", fontSize = 20.sp)
-                    }
-                    if (video) VideoAppShortcuts()
-                    EmergencyStopButton(onEmergencyStop)
-                }
-                is RestState.Waking -> {
-                    SessionHeading(
-                        if (session.profile.quietWake) "시청을 마무리하고 있어요" else "휴식을 마무리하고 있어요",
-                        session.stage.title,
-                    )
-                    EmergencyStopButton(onEmergencyStop)
-                }
-                is RestState.RestoringSeat -> {
-                    SessionHeading("시트를 되돌리고 있어요", session.message)
-                    EmergencyStopButton(onEmergencyStop)
-                }
-                is RestState.Finished -> {
-                    SessionHeading("휴식이 끝났어요", "시트와 차량 환경을 휴식 전 상태로 되돌렸어요.")
-                    SessionWarnings(session.warnings)
-                    SessionDoneButton(onDone)
-                }
-                is RestState.Interrupted -> {
-                    SessionHeading("휴식이 중단되었어요", session.reason)
-                    SessionWarnings(session.warnings)
-                    if (session.canRestoreSeat) {
-                        Button(
-                            onClick = onRestoreSeat,
-                            modifier = Modifier.fillMaxWidth().height(66.dp),
-                            shape = RoundedCornerShape(18.dp),
-                        ) {
-                            Text("시트 되돌리기", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    SessionDoneButton(onDone)
-                }
-                is RestState.Rejected -> {
-                    SessionHeading("시작하지 않았어요", session.reason)
-                    SessionDoneButton(onDone)
-                }
-            }
-        }
-    }
-}
-
-/**
- * Side view of the seat. On the Pleos Connect emulator the backrest value never
- * changes, so the picture plays the commanded motion and says so.
- */
-@Composable
-private fun SeatPicture(seat: SeatView) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Canvas(modifier = Modifier.size(width = 240.dp, height = 150.dp)) {
-            val unit = size.height / 10f
-            val floorY = size.height - unit
-            val hingeX = size.width * 0.62f
-            val cushionTop = floorY - unit * 3.2f
-            drawLine(NupcarMuted.copy(alpha = 0.4f), Offset(0f, floorY), Offset(size.width, floorY), unit * 0.25f, StrokeCap.Round)
-            drawRoundRect(
-                color = NupcarMint.copy(alpha = 0.55f),
-                topLeft = Offset(hingeX - unit * 0.6f, cushionTop + unit * 1.1f),
-                size = Size(unit * 1.2f, floorY - cushionTop - unit * 1.1f),
-                cornerRadius = CornerRadius(unit * 0.3f),
-            )
+private fun SeatDrawing(recline: Float, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val unit = size.height / 10f
+        val floorY = size.height - unit
+        val hingeX = size.width * 0.62f
+        val cushionTop = floorY - unit * 3.2f
+        drawLine(NupcarMuted.copy(alpha = 0.4f), Offset(0f, floorY), Offset(size.width, floorY), unit * 0.25f, StrokeCap.Round)
+        drawRoundRect(
+            color = NupcarMint.copy(alpha = 0.55f),
+            topLeft = Offset(hingeX - unit * 0.6f, cushionTop + unit * 1.1f),
+            size = Size(unit * 1.2f, floorY - cushionTop - unit * 1.1f),
+            cornerRadius = CornerRadius(unit * 0.3f),
+        )
+        drawRoundRect(
+            color = NupcarMint,
+            topLeft = Offset(hingeX - unit * 0.3f, cushionTop),
+            size = Size(size.width * 0.34f, unit * 1.2f),
+            cornerRadius = CornerRadius(unit * 0.6f),
+        )
+        // 0 recline leans the backrest 12° back from vertical, full recline lays it flat.
+        val degrees = -(12f + recline.coerceIn(0f, 1f) * 78f)
+        val pivot = Offset(hingeX, cushionTop + unit * 0.6f)
+        rotate(degrees, pivot) {
+            val length = unit * 6f
             drawRoundRect(
                 color = NupcarMint,
-                topLeft = Offset(hingeX - unit * 0.3f, cushionTop),
-                size = Size(size.width * 0.34f, unit * 1.2f),
+                topLeft = Offset(pivot.x - unit * 0.6f, pivot.y - length),
+                size = Size(unit * 1.2f, length),
                 cornerRadius = CornerRadius(unit * 0.6f),
             )
-            // 0 recline leans the backrest 12° back from vertical, full recline lays it flat.
-            val degrees = -(12f + seat.recline.coerceIn(0f, 1f) * 78f)
-            val pivot = Offset(hingeX, cushionTop + unit * 0.6f)
-            rotate(degrees, pivot) {
-                val length = unit * 6f
-                drawRoundRect(
-                    color = NupcarMint,
-                    topLeft = Offset(pivot.x - unit * 0.6f, pivot.y - length),
-                    size = Size(unit * 1.2f, length),
-                    cornerRadius = CornerRadius(unit * 0.6f),
-                )
-                drawRoundRect(
-                    color = NupcarMint.copy(alpha = 0.8f),
-                    topLeft = Offset(pivot.x - unit * 0.7f, pivot.y - length - unit * 1.7f),
-                    size = Size(unit * 1.4f, unit * 1.4f),
-                    cornerRadius = CornerRadius(unit * 0.5f),
-                )
-            }
+            drawRoundRect(
+                color = NupcarMint.copy(alpha = 0.8f),
+                topLeft = Offset(pivot.x - unit * 0.7f, pivot.y - length - unit * 1.7f),
+                size = Size(unit * 1.4f, unit * 1.4f),
+                cornerRadius = CornerRadius(unit * 0.5f),
+            )
         }
-        Text(
-            "등받이 눕힘 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)",
-            fontSize = 16.sp,
-            color = NupcarMint,
-        )
-        Text(
-            if (seat.simulated) {
-                "시각화 화면이에요. 에뮬레이터에서는 등받이 값이 바뀌지 않아요" +
-                    (seat.position?.let { " (실제 값 $it)" } ?: "")
-            } else {
-                "실제 시트 위치예요" + (seat.position?.let { " (값 $it)" } ?: "")
-            },
-            fontSize = 13.sp,
-            color = NupcarMuted,
-        )
     }
 }
 
