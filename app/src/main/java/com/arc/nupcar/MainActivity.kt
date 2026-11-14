@@ -629,7 +629,7 @@ class NupcarViewModel(application: Application) : AndroidViewModel(application) 
 private val NupcarBackground = Color(0xFF07151E)
 private val NupcarPanel = Color(0xFF112732)
 private val NupcarMint = Color(0xFF95F3D1)
-private val NupcarMuted = Color(0xFFA6BAC2)
+private val NupcarMuted = Color(0xFFC3D3D9)
 
 @Composable
 private fun NupcarTheme(content: @Composable () -> Unit) {
@@ -690,9 +690,21 @@ private fun NupcarScreen(
         else -> (sessionProfile ?: state.profile).ambientRatio
     }
 
+    // A session (or preview) starting must not leave the mode list open for later.
+    LaunchedEffect(canEdit) { if (!canEdit) modeMenuOpen = false }
+
     Surface(modifier = Modifier.fillMaxSize(), color = NupcarBackground) {
         Box(modifier = Modifier.fillMaxSize()) {
             SceneBackground(mode = sceneMode, light = sceneLight)
+            if (modeMenuOpen && canEdit) {
+                // Tapping outside the mode list closes it.
+                Box(
+                    Modifier.fillMaxSize().clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    ) { modeMenuOpen = false },
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -738,6 +750,8 @@ private fun NupcarScreen(
                         StartChip(onStart = onStart, onPreview = onPreview)
                     } else if (!idle) {
                         GlassChip { Text(sessionBadge(session), fontSize = 16.sp, color = NupcarMint) }
+                    } else if (previewing) {
+                        GlassChip { Text("알림 체험", fontSize = 16.sp, color = NupcarMint) }
                     }
                 }
 
@@ -824,7 +838,7 @@ private fun NupcarScreen(
 private const val WAKE_SCENE_LIGHT = 0.7f
 
 private fun sceneHint(session: RestState, canEdit: Boolean): String = when {
-    canEdit -> "기어가 P일 때만 시작돼요 · 아래에서 항목을 고르면 바로 위에서 조정해요"
+    canEdit -> "기어가 P일 때만 시작돼요"
     session is RestState.Idle -> ""
     session is RestState.Finished || session is RestState.Rejected || session is RestState.Interrupted -> ""
     else -> "기어가 P에서 바뀌면 시트가 바로 멈춰요"
@@ -844,7 +858,7 @@ private fun sessionBadge(session: RestState): String = when (session) {
 /** Translucent panel over the scene, with a hairline edge. */
 private fun Modifier.glass(shape: Shape): Modifier = this
     .clip(shape)
-    .background(Color(0xFF07131B).copy(alpha = 0.62f))
+    .background(Color(0xFF07131B).copy(alpha = 0.74f))
     .border(1.dp, Color.White.copy(alpha = 0.14f), shape)
 
 @Composable
@@ -1065,11 +1079,11 @@ private fun SeatCorner(seat: SeatView, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         SeatDrawing(seat.recline, Modifier.size(width = 200.dp, height = 126.dp))
-        Text("등받이 ${(seat.settingRatio * 100).roundToInt()}% (안전 범위 기준)", fontSize = 17.sp, color = NupcarMint)
+        Text("등받이 ${(seat.settingRatio * 100).roundToInt()}%", fontSize = 17.sp, color = NupcarMint)
         Text(
-            if (seat.simulated) "시각화 화면 · 에뮬레이터 값 고정" else "실제 시트 위치",
+            if (seat.simulated) "시트 위치 (시뮬레이션)" else "실제 시트 위치",
             fontSize = 17.sp,
-            color = Color.White.copy(alpha = 0.6f),
+            color = Color.White.copy(alpha = 0.82f),
         )
     }
 }
@@ -1097,7 +1111,11 @@ private fun SettingBar(selected: SettingTab?, state: NupcarState, onSelect: (Set
             ) {
                 TabIcon(item, if (chosen) NupcarMint else Color.White, Modifier.size(28.dp))
                 Text(item.title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (chosen) NupcarMint else Color.White)
-                Text(tabValue(item, state), fontSize = 17.sp, maxLines = 1, color = NupcarMuted)
+                Text(
+                    tabValue(item, state), fontSize = 17.sp, maxLines = 1, color = NupcarMuted,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                )
             }
         }
     }
@@ -1234,7 +1252,6 @@ private fun tabValue(tab: SettingTab, state: NupcarState): String {
         SettingTab.CLIMATE -> "${profile.temperatureC.roundToInt()}°C"
         SettingTab.SOUND -> when {
             profile.quietWake -> "알림"
-            profile.breathingGuide -> profile.sound.title + " · 호흡"
             else -> profile.sound.title
         }
     }
@@ -1619,11 +1636,7 @@ private fun SessionPanel(
         NupcarPhase.FINISHED -> if (state.isPreview) "알림 체험 완료" else "휴식이 끝났어요"
     }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = NupcarPanel),
-    ) {
+    Box(modifier = modifier.fillMaxWidth().glass(RoundedCornerShape(28.dp))) {
         Column(
             modifier = Modifier.padding(28.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -1631,7 +1644,10 @@ private fun SessionPanel(
         ) {
             Text(heading, fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                if (state.isPreview) "10초 뒤 알림을 확인해 보세요." else
+                if (state.isPreview) {
+                    if (state.phase == NupcarPhase.FINISHED) "알림이 울렸는지 확인해 보세요."
+                    else "10초 뒤 알림을 확인해 보세요."
+                } else
                     state.mode.title + " · " + formatMinutes(state.selectedMinutes),
                 color = NupcarMuted,
                 fontSize = 17.sp,
