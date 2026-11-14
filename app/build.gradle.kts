@@ -9,7 +9,7 @@ plugins {
 val targetAndroidSdk = 35
 val sampleVersionMajor = 1
 val sampleVersionMinor = 2
-val sampleVersionPatch = 3
+val sampleVersionPatch = 4
 val simulatedVehicle = providers.gradleProperty("nupcar.simulated").orNull == "true"
 
 /**
