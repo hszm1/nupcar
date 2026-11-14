@@ -40,6 +40,7 @@
 | 빌드 도구 | Gradle 8.13, Android Gradle Plugin 8.13.2 |
 | JDK | Microsoft OpenJDK 17 |
 | 에뮬레이터 | Pleos Connect Emulator v2.1.0 (Android 14, API 34) |
+| 화면 규격 | 2560×1440 px, 160 dpi 가로 화면 (앱 표시 영역 약 1680×1210 dp) |
 | Vehicle SDK | `ai.pleos.playground:Vehicle:2.3.2` |
 | Vehicle Service | 2.3.22 |
 | 최소 SDK | API 28 |
