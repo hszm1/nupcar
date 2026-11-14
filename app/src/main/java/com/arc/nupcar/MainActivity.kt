@@ -626,6 +626,24 @@ class NupcarViewModel(application: Application) : AndroidViewModel(application) 
     }
 }
 
+/**
+ * The car OS has no font-size setting (Settings has only brightness and captions), and its own
+ * list text is about 30 px on this 2560x1440 / 160 dpi display. The app's sp values are scaled
+ * up so its text reads as large as the system UI from the driver's seat.
+ */
+private const val CABIN_FONT_SCALE = 1.55f
+
+private const val TEMP_MIN = 18f
+private const val TEMP_MAX = 28f
+private const val TEMP_STEP = 0.5f
+
+/** "23°C" or "23.5°C": the climate target moves in half-degree steps. */
+private fun formatTemp(celsius: Float): String =
+    if (celsius % 1f == 0f) "${celsius.toInt()}°C" else String.format(Locale.US, "%.1f°C", celsius)
+
+private fun snapTemp(celsius: Float): Float =
+    ((celsius / TEMP_STEP).roundToInt() * TEMP_STEP).coerceIn(TEMP_MIN, TEMP_MAX)
+
 private val NupcarBackground = Color(0xFF07151E)
 private val NupcarPanel = Color(0xFF112732)
 private val NupcarMint = Color(0xFF95F3D1)
@@ -635,7 +653,7 @@ private val NupcarMuted = Color(0xFFC3D3D9)
 private fun NupcarTheme(content: @Composable () -> Unit) {
     // One soft, rounded-looking face everywhere, and every sp a little larger for the car screen.
     val density = LocalDensity.current
-    CompositionLocalProvider(LocalDensity provides Density(density.density, density.fontScale * 1.12f)) {
+    CompositionLocalProvider(LocalDensity provides Density(density.density, density.fontScale * CABIN_FONT_SCALE)) {
         MaterialTheme(
             colorScheme = darkColorScheme(
                 primary = NupcarMint,
@@ -760,7 +778,7 @@ private fun NupcarScreen(
                     modifier = Modifier
                         .align(Alignment.Center)
                         // Idle leaves room for the setting panel; a session keeps the timer in the middle.
-                        .padding(bottom = if (idle && !previewing) 260.dp else 60.dp),
+                        .padding(bottom = if (idle && !previewing) 350.dp else 60.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     when {
@@ -995,14 +1013,14 @@ private fun IdleScene(state: NupcarState) {
         Text(state.mode.description, fontSize = 17.sp, color = Color.White.copy(alpha = 0.72f))
         SeatDrawing(
             recline = profile.reclineRatio.coerceIn(0f, 1f) * MAX_RECLINE_SHARE,
-            modifier = Modifier.padding(top = 12.dp).size(width = 380.dp, height = 240.dp),
+            modifier = Modifier.padding(top = 8.dp).size(width = 330.dp, height = 200.dp),
         )
         Text(
             listOf(
                 formatMinutes(state.selectedMinutes),
                 "등받이 ${(profile.reclineRatio * 100).roundToInt()}%",
                 "조명 ${(profile.ambientRatio * 100).roundToInt()}%",
-                "${profile.temperatureC.roundToInt()}°C",
+                formatTemp(profile.temperatureC),
             ).joinToString("  ·  "),
             fontSize = 16.sp,
             color = Color.White.copy(alpha = 0.7f),
@@ -1101,7 +1119,7 @@ private fun SettingBar(selected: SettingTab?, state: NupcarState, onSelect: (Set
             val chosen = item == selected
             Column(
                 modifier = Modifier
-                    .width(124.dp)
+                    .width(160.dp)
                     .clip(RoundedCornerShape(50))
                     .background(if (chosen) NupcarMint.copy(alpha = 0.18f) else Color.Transparent)
                     .clickable { onSelect(item) }
@@ -1249,7 +1267,7 @@ private fun tabValue(tab: SettingTab, state: NupcarState): String {
         SettingTab.TIME -> formatMinutes(state.selectedMinutes)
         SettingTab.SEAT -> "${(profile.reclineRatio * 100).roundToInt()}%"
         SettingTab.LIGHT -> "${(profile.ambientRatio * 100).roundToInt()}%"
-        SettingTab.CLIMATE -> "${profile.temperatureC.roundToInt()}°C"
+        SettingTab.CLIMATE -> formatTemp(profile.temperatureC)
         SettingTab.SOUND -> when {
             profile.quietWake -> "알림"
             else -> profile.sound.title
@@ -1290,7 +1308,7 @@ private fun TimePanel(state: NupcarState, enabled: Boolean, onMinutesSelected: (
                 enabled = enabled && current > MIN_REST_MINUTES,
                 shape = RoundedCornerShape(18.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp),
-                modifier = Modifier.width(104.dp).height(72.dp),
+                modifier = Modifier.width(136.dp).height(80.dp),
             ) { Text("−10분", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
             Box(Modifier.weight(1f)) {
                 TimeWheel(totalMinutes = current, enabled = enabled, onChange = onMinutesSelected)
@@ -1300,7 +1318,7 @@ private fun TimePanel(state: NupcarState, enabled: Boolean, onMinutesSelected: (
                 enabled = enabled && current < MAX_REST_MINUTES,
                 shape = RoundedCornerShape(18.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp),
-                modifier = Modifier.width(104.dp).height(72.dp),
+                modifier = Modifier.width(136.dp).height(80.dp),
             ) { Text("+10분", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
         }
     }
@@ -1342,8 +1360,8 @@ private fun LightPanel(profile: RestProfile, enabled: Boolean, onChange: (RestPr
 
 @Composable
 private fun ClimatePanel(profile: RestProfile, enabled: Boolean, onChange: (RestProfile) -> Unit) {
-    val temperature = profile.temperatureC.roundToInt()
-    val set = { value: Int -> onChange(profile.copy(temperatureC = value.coerceIn(18, 28).toFloat())) }
+    val temperature = profile.temperatureC
+    val set = { value: Float -> onChange(profile.copy(temperatureC = snapTemp(value))) }
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
         PanelTitle("실내 온도", "쉬는 동안 맞출 공조 온도예요. 끝나면 원래 온도로 돌아가요.")
         Row(
@@ -1352,22 +1370,22 @@ private fun ClimatePanel(profile: RestProfile, enabled: Boolean, onChange: (Rest
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
-                onClick = { set(temperature - 1) },
-                enabled = enabled && temperature > 18,
+                onClick = { set(temperature - TEMP_STEP) },
+                enabled = enabled && temperature > TEMP_MIN,
                 modifier = Modifier.size(72.dp),
                 shape = CircleShape,
                 contentPadding = PaddingValues(0.dp),
             ) { Text("−", fontSize = 30.sp) }
             Text(
-                "$temperature°C",
+                formatTemp(temperature),
                 fontSize = 64.sp,
                 fontWeight = FontWeight.Light,
                 color = NupcarMint,
                 modifier = Modifier.padding(horizontal = 40.dp),
             )
             OutlinedButton(
-                onClick = { set(temperature + 1) },
-                enabled = enabled && temperature < 28,
+                onClick = { set(temperature + TEMP_STEP) },
+                enabled = enabled && temperature < TEMP_MAX,
                 modifier = Modifier.size(72.dp),
                 shape = CircleShape,
                 contentPadding = PaddingValues(0.dp),
@@ -1375,8 +1393,9 @@ private fun ClimatePanel(profile: RestProfile, enabled: Boolean, onChange: (Rest
         }
         Slider(
             value = profile.temperatureC,
-            onValueChange = { set(it.roundToInt()) },
-            valueRange = 18f..28f,
+            onValueChange = { set(it) },
+            valueRange = TEMP_MIN..TEMP_MAX,
+            steps = ((TEMP_MAX - TEMP_MIN) / TEMP_STEP).toInt() - 1,
             enabled = enabled,
         )
     }
